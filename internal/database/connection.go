@@ -6,6 +6,8 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
+	"github.com/your-org/lms-backend/internal/repository"
+	"github.com/your-org/lms-backend/internal/repository/postgres"
 	"github.com/your-org/lms-backend/pkg/config"
 	"github.com/your-org/lms-backend/pkg/logger"
 )
@@ -13,47 +15,71 @@ import (
 // DB holds the database connection
 var DB *sql.DB
 
+// RepoManager holds the repository manager
+var RepoManager repository.RepositoryManager
+
 // ConnectionConfig holds database connection configuration
 type ConnectionConfig struct {
-	Host     string
-	Port     string
-	User     string
-	Password string
-	DBName   string
-	SSLMode  string
+	Host            string
+	Port            string
+	User            string
+	Password        string
+	DBName          string
+	SSLMode         string
+	MaxOpenConns    int
+	MaxIdleConns    int
+	ConnMaxLifetime time.Duration
+	ConnMaxIdleTime time.Duration
 }
 
 // NewConnectionConfig creates a new connection config from app config
 func NewConnectionConfig(cfg *config.Config) *ConnectionConfig {
 	return &ConnectionConfig{
-		Host:     cfg.Database.Host,
-		Port:     cfg.Database.Port,
-		User:     cfg.Database.User,
-		Password: cfg.Database.Password,
-		DBName:   cfg.Database.DBName,
-		SSLMode:  cfg.Database.SSLMode,
+		Host:            cfg.Database.Host,
+		Port:            cfg.Database.Port,
+		User:            cfg.Database.User,
+		Password:        cfg.Database.Password,
+		DBName:          cfg.Database.DBName,
+		SSLMode:         cfg.Database.SSLMode,
+		MaxOpenConns:    25,
+		MaxIdleConns:    5,
+		ConnMaxLifetime: 5 * time.Minute,
+		ConnMaxIdleTime: 1 * time.Minute,
 	}
 }
 
 // Connect establishes a connection to the database with retry logic
 func Connect(cfg *ConnectionConfig) error {
-	// Build connection string
-	connStr := fmt.Sprintf(
-		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
-		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.DBName, cfg.SSLMode,
-	)
-
-	// Open database connection
-	db, err := sql.Open("postgres", connStr)
-	if err != nil {
-		return fmt.Errorf("failed to open database connection: %w", err)
+	// Convert port string to int
+	port := 5432 // default PostgreSQL port
+	if cfg.Port != "" {
+		if p, err := fmt.Sscanf(cfg.Port, "%d", &port); err != nil || p != 1 {
+			logger.Warn("Invalid port, using default 5432", logger.WithFields(map[string]interface{}{
+				"provided_port": cfg.Port,
+				"default_port": 5432,
+			}).Data)
+		}
 	}
 
-	// Configure connection pool
-	db.SetMaxOpenConns(25)                 // Maximum number of open connections
-	db.SetMaxIdleConns(5)                  // Maximum number of idle connections
-	db.SetConnMaxLifetime(5 * time.Minute) // Maximum lifetime of a connection
-	db.SetConnMaxIdleTime(1 * time.Minute) // Maximum idle time of a connection
+	// Create PostgreSQL database config
+	dbConfig := postgres.DatabaseConfig{
+		Host:            cfg.Host,
+		Port:            port,
+		User:            cfg.User,
+		Password:        cfg.Password,
+		DBName:          cfg.DBName,
+		SSLMode:         cfg.SSLMode,
+		MaxOpenConns:    cfg.MaxOpenConns,
+		MaxIdleConns:    cfg.MaxIdleConns,
+		ConnMaxLifetime: cfg.ConnMaxLifetime,
+		ConnMaxIdleTime: cfg.ConnMaxIdleTime,
+	}
+
+	// Create database connection with pooling
+	db, err := postgres.NewDatabaseConnection(dbConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create database connection: %w", err)
+	}
 
 	// Retry connection with exponential backoff
 	maxRetries := 10
@@ -77,11 +103,18 @@ func Connect(cfg *ConnectionConfig) error {
 	// Set global DB variable
 	DB = db
 
-	logger.Info("Successfully connected to database", logger.WithFields(map[string]interface{}{
-		"host":     cfg.Host,
-		"port":     cfg.Port,
-		"user":     cfg.User,
-		"database": cfg.DBName,
+	// Create repository manager
+	RepoManager = postgres.NewRepositoryManager(db)
+
+	logger.Info("Successfully connected to database with repository manager", logger.WithFields(map[string]interface{}{
+		"host":            cfg.Host,
+		"port":            port,
+		"user":            cfg.User,
+		"database":        cfg.DBName,
+		"max_open_conns":  cfg.MaxOpenConns,
+		"max_idle_conns":  cfg.MaxIdleConns,
+		"conn_max_lifetime": cfg.ConnMaxLifetime,
+		"conn_max_idle_time": cfg.ConnMaxIdleTime,
 	}).Data)
 	
 	return nil
@@ -89,6 +122,11 @@ func Connect(cfg *ConnectionConfig) error {
 
 // Close closes the database connection
 func Close() error {
+	if RepoManager != nil {
+		if err := RepoManager.Close(); err != nil {
+			return fmt.Errorf("failed to close repository manager: %w", err)
+		}
+	}
 	if DB != nil {
 		return DB.Close()
 	}
@@ -98,6 +136,11 @@ func Close() error {
 // GetDB returns the database connection
 func GetDB() *sql.DB {
 	return DB
+}
+
+// GetRepoManager returns the repository manager
+func GetRepoManager() repository.RepositoryManager {
+	return RepoManager
 }
 
 // IsConnected checks if the database is connected

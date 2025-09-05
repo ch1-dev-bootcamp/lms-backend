@@ -1,0 +1,195 @@
+package postgres
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/lib/pq"
+	"github.com/your-org/lms-backend/internal/models"
+)
+
+// BaseRepository provides common database operations
+type BaseRepository[T any] struct {
+	db    *sql.DB
+	table string
+}
+
+// NewBaseRepository creates a new base repository
+func NewBaseRepository[T any](db *sql.DB, table string) *BaseRepository[T] {
+	return &BaseRepository[T]{
+		db:    db,
+		table: table,
+	}
+}
+
+// Create inserts a new record into the database
+func (r *BaseRepository[T]) Create(ctx context.Context, entity *T) error {
+	// This is a generic implementation that would need to be overridden
+	// by specific repositories based on their table structure
+	return fmt.Errorf("Create method must be implemented by specific repository")
+}
+
+// GetByID retrieves a record by ID
+func (r *BaseRepository[T]) GetByID(ctx context.Context, id uuid.UUID) (*T, error) {
+	// This is a generic implementation that would need to be overridden
+	// by specific repositories based on their table structure
+	return nil, fmt.Errorf("GetByID method must be implemented by specific repository")
+}
+
+// Update updates an existing record
+func (r *BaseRepository[T]) Update(ctx context.Context, entity *T) error {
+	// This is a generic implementation that would need to be overridden
+	// by specific repositories based on their table structure
+	return fmt.Errorf("Update method must be implemented by specific repository")
+}
+
+// Delete removes a record by ID
+func (r *BaseRepository[T]) Delete(ctx context.Context, id uuid.UUID) error {
+	query := fmt.Sprintf("DELETE FROM %s WHERE id = $1", r.table)
+	_, err := r.db.ExecContext(ctx, query, id)
+	return err
+}
+
+// List retrieves records with pagination
+func (r *BaseRepository[T]) List(ctx context.Context, pagination models.PaginationRequest) ([]T, *models.PaginationResponse, error) {
+	// This is a generic implementation that would need to be overridden
+	// by specific repositories based on their table structure
+	return nil, nil, fmt.Errorf("List method must be implemented by specific repository")
+}
+
+// Helper functions for common database operations
+
+// buildPaginationQuery builds a pagination query with LIMIT and OFFSET
+func buildPaginationQuery(baseQuery string, pagination models.PaginationRequest) (string, []interface{}) {
+	offset := pagination.GetOffset()
+	query := fmt.Sprintf("%s LIMIT %d OFFSET %d", baseQuery, pagination.PageSize, offset)
+	return query, []interface{}{}
+}
+
+// buildCountQuery builds a count query for pagination
+func buildCountQuery(baseQuery string) string {
+	return fmt.Sprintf("SELECT COUNT(*) FROM (%s) AS count_query", baseQuery)
+}
+
+// executePaginationQuery executes a query with pagination and returns results with pagination metadata
+func executePaginationQuery[T any](
+	ctx context.Context,
+	db *sql.DB,
+	baseQuery string,
+	countQuery string,
+	pagination models.PaginationRequest,
+	scanFunc func(*sql.Rows) (*T, error),
+) ([]T, *models.PaginationResponse, error) {
+	// Get total count
+	var total int
+	err := db.QueryRowContext(ctx, countQuery).Scan(&total)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get total count: %w", err)
+	}
+
+	// Build pagination query
+	query, _ := buildPaginationQuery(baseQuery, pagination)
+
+	// Execute query
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to execute query: %w", err)
+	}
+	defer rows.Close()
+
+	// Scan results
+	var results []T
+	for rows.Next() {
+		entity, err := scanFunc(rows)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to scan row: %w", err)
+		}
+		results = append(results, *entity)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("error iterating rows: %w", err)
+	}
+
+	// Build pagination response
+	paginationResp := &models.PaginationResponse{
+		Page:       pagination.Page,
+		PageSize:   pagination.PageSize,
+		Total:      total,
+		TotalPages: (total + pagination.PageSize - 1) / pagination.PageSize,
+	}
+
+	return results, paginationResp, nil
+}
+
+// handleDatabaseError handles common database errors and converts them to appropriate application errors
+func handleDatabaseError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	// Handle PostgreSQL specific errors
+	if pqErr, ok := err.(*pq.Error); ok {
+		switch pqErr.Code {
+		case "23505": // unique_violation
+			return fmt.Errorf("duplicate entry: %s", pqErr.Detail)
+		case "23503": // foreign_key_violation
+			return fmt.Errorf("referenced record not found: %s", pqErr.Detail)
+		case "23502": // not_null_violation
+			return fmt.Errorf("required field is missing: %s", pqErr.Column)
+		case "23514": // check_violation
+			return fmt.Errorf("constraint violation: %s", pqErr.Detail)
+		default:
+			return fmt.Errorf("database error: %s", pqErr.Message)
+		}
+	}
+
+	// Handle common SQL errors
+	switch err {
+	case sql.ErrNoRows:
+		return fmt.Errorf("record not found")
+	case sql.ErrConnDone:
+		return fmt.Errorf("database connection is closed")
+	default:
+		return fmt.Errorf("database error: %w", err)
+	}
+}
+
+// parseTime parses a time string from the database
+func parseTime(timeStr sql.NullString) *time.Time {
+	if !timeStr.Valid {
+		return nil
+	}
+	
+	t, err := time.Parse(time.RFC3339, timeStr.String)
+	if err != nil {
+		return nil
+	}
+	
+	return &t
+}
+
+// parseUUID parses a UUID string from the database
+func parseUUID(uuidStr sql.NullString) *uuid.UUID {
+	if !uuidStr.Valid {
+		return nil
+	}
+	
+	id, err := uuid.Parse(uuidStr.String)
+	if err != nil {
+		return nil
+	}
+	
+	return &id
+}
+
+// parseString parses a string from the database
+func parseString(str sql.NullString) *string {
+	if !str.Valid {
+		return nil
+	}
+	return &str.String
+}

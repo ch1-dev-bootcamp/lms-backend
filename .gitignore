@@ -5,6 +5,9 @@
 *.so
 *.dylib
 
+# Go build output
+lms-backend
+
 # Test binary, built with `go test -c`
 *.test
 

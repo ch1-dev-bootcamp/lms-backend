@@ -13,7 +13,6 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./migrations:/docker-entrypoint-initdb.d
     networks:
       - lms-network
     healthcheck:
@@ -40,6 +39,23 @@ services:
       timeout: 5s
       retries: 5
 
+  # Database Migration Service
+  migrate:
+    image: migrate/migrate
+    container_name: lms-migrate
+    volumes:
+      - ./migrations:/migrations
+    command: [
+      "-path", "/migrations",
+      "-database", "postgres://postgres:postgres123@postgres:5432/lms?sslmode=disable",
+      "up"
+    ]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - lms-network
+
   # LMS Backend Application
   lms-backend:
     build:
@@ -62,8 +78,8 @@ services:
       - LOG_FORMAT=json
       - LOG_OUTPUT=stdout
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     networks:

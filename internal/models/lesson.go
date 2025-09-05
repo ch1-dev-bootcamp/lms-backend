@@ -13,6 +13,7 @@ type Lesson struct {
 	Title       string    `json:"title" db:"title"`
 	Content     *string   `json:"content" db:"content"`
 	OrderNumber int       `json:"order_number" db:"order_number"`
+	Duration    int       `json:"duration" db:"duration"` // Duration in minutes
 	CreatedAt   time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
 }
@@ -23,6 +24,7 @@ type CreateLessonRequest struct {
 	Title       string  `json:"title" validate:"required,min=3,max=200" example:"Getting Started with Go"`
 	Content     *string `json:"content,omitempty" validate:"omitempty,max=5000" example:"This lesson covers the basics of Go programming..."`
 	OrderNumber int     `json:"order_number,omitempty" validate:"omitempty,min=1" example:"1"`
+	Duration    int     `json:"duration,omitempty" validate:"omitempty,min=1,max=480" example:"30"` // Duration in minutes (max 8 hours)
 }
 
 // UpdateLessonRequest represents the request payload for updating a lesson
@@ -30,6 +32,7 @@ type UpdateLessonRequest struct {
 	Title       string  `json:"title,omitempty" validate:"omitempty,min=3,max=200" example:"Getting Started with Go"`
 	Content     *string `json:"content,omitempty" validate:"omitempty,max=5000" example:"This lesson covers the basics of Go programming..."`
 	OrderNumber int     `json:"order_number,omitempty" validate:"omitempty,min=1" example:"1"`
+	Duration    int     `json:"duration,omitempty" validate:"omitempty,min=1,max=480" example:"30"` // Duration in minutes (max 8 hours)
 }
 
 // LessonResponse represents the response payload for lesson data
@@ -39,6 +42,7 @@ type LessonResponse struct {
 	Title       string    `json:"title" example:"Getting Started with Go"`
 	Content     *string   `json:"content" example:"This lesson covers the basics of Go programming..."`
 	OrderNumber int       `json:"order_number" example:"1"`
+	Duration    int       `json:"duration" example:"30"` // Duration in minutes
 	CreatedAt   time.Time `json:"created_at" example:"2023-01-01T00:00:00Z"`
 	UpdatedAt   time.Time `json:"updated_at" example:"2023-01-01T00:00:00Z"`
 }
@@ -51,6 +55,7 @@ func (l *Lesson) ToResponse() LessonResponse {
 		Title:       l.Title,
 		Content:     l.Content,
 		OrderNumber: l.OrderNumber,
+		Duration:    l.Duration,
 		CreatedAt:   l.CreatedAt,
 		UpdatedAt:   l.UpdatedAt,
 	}

@@ -11,7 +11,9 @@ import (
 	"github.com/your-org/lms-backend/internal/models"
 )
 
-// BaseRepository provides common database operations
+// BaseRepository provides common database operations and helper functions.
+// Note: Most CRUD operations (Create, GetByID, Update, List) are implemented
+// in individual repository files, not in this base repository.
 type BaseRepository[T any] struct {
 	db    *sql.DB
 	table string
@@ -25,39 +27,12 @@ func NewBaseRepository[T any](db *sql.DB, table string) *BaseRepository[T] {
 	}
 }
 
-// Create inserts a new record into the database
-func (r *BaseRepository[T]) Create(ctx context.Context, entity *T) error {
-	// This is a generic implementation that would need to be overridden
-	// by specific repositories based on their table structure
-	return fmt.Errorf("Create method must be implemented by specific repository")
-}
-
-// GetByID retrieves a record by ID
-func (r *BaseRepository[T]) GetByID(ctx context.Context, id uuid.UUID) (*T, error) {
-	// This is a generic implementation that would need to be overridden
-	// by specific repositories based on their table structure
-	return nil, fmt.Errorf("GetByID method must be implemented by specific repository")
-}
-
-// Update updates an existing record
-func (r *BaseRepository[T]) Update(ctx context.Context, entity *T) error {
-	// This is a generic implementation that would need to be overridden
-	// by specific repositories based on their table structure
-	return fmt.Errorf("Update method must be implemented by specific repository")
-}
-
 // Delete removes a record by ID
+// This is a generic implementation that works for all tables with an 'id' column
 func (r *BaseRepository[T]) Delete(ctx context.Context, id uuid.UUID) error {
 	query := fmt.Sprintf("DELETE FROM %s WHERE id = $1", r.table)
 	_, err := r.db.ExecContext(ctx, query, id)
-	return err
-}
-
-// List retrieves records with pagination
-func (r *BaseRepository[T]) List(ctx context.Context, pagination models.PaginationRequest) ([]T, *models.PaginationResponse, error) {
-	// This is a generic implementation that would need to be overridden
-	// by specific repositories based on their table structure
-	return nil, nil, fmt.Errorf("List method must be implemented by specific repository")
+	return handleDatabaseError(err)
 }
 
 // Helper functions for common database operations

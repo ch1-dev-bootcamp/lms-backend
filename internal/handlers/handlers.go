@@ -328,14 +328,7 @@ func ListCourses(c *gin.Context) {
 	// Convert to response format
 	courseResponses := make([]models.CourseResponse, len(courses))
 	for i, course := range courses {
-		courseResponses[i] = models.CourseResponse{
-			ID:           course.ID,
-			Title:        course.Title,
-			Description:  course.Description,
-			InstructorID: course.InstructorID,
-			Status:       course.Status,
-			CreatedAt:    course.CreatedAt,
-		}
+		courseResponses[i] = course.ToResponse()
 	}
 
 	response := models.CourseListResponse{
@@ -439,21 +432,7 @@ func GetCourse(c *gin.Context) {
 		return
 	}
 
-	response := models.CourseDetailResponse{
-		CourseResponse: models.CourseResponse{
-			ID:           courseDetail.ID,
-			Title:        courseDetail.Title,
-			Description:  courseDetail.Description,
-			InstructorID: courseDetail.InstructorID,
-			Status:       courseDetail.Status,
-			CreatedAt:    courseDetail.CreatedAt,
-			UpdatedAt:    courseDetail.UpdatedAt,
-		},
-		InstructorName:  courseDetail.InstructorName,
-		LessonCount:     courseDetail.LessonCount,
-		EnrollmentCount: courseDetail.EnrollmentCount,
-	}
-	c.JSON(http.StatusOK, response)
+	c.JSON(http.StatusOK, courseDetail)
 }
 
 func UpdateCourse(c *gin.Context) {
@@ -625,15 +604,7 @@ func InstructorCourseList(c *gin.Context) {
 	// Convert to response format
 	courseResponses := make([]models.CourseResponse, len(courses))
 	for i, course := range courses {
-		courseResponses[i] = models.CourseResponse{
-			ID:           course.ID,
-			Title:        course.Title,
-			Description:  course.Description,
-			InstructorID: course.InstructorID,
-			Status:       course.Status,
-			CreatedAt:    course.CreatedAt,
-			UpdatedAt:    course.UpdatedAt,
-		}
+		courseResponses[i] = course.ToResponse()
 	}
 
 	response := models.CourseListResponse{
@@ -666,15 +637,7 @@ func SearchCourses(c *gin.Context) {
 	// Convert to response format
 	courseResponses := make([]models.CourseResponse, len(courses))
 	for i, course := range courses {
-		courseResponses[i] = models.CourseResponse{
-			ID:           course.ID,
-			Title:        course.Title,
-			Description:  course.Description,
-			InstructorID: course.InstructorID,
-			Status:       course.Status,
-			CreatedAt:    course.CreatedAt,
-			UpdatedAt:    course.UpdatedAt,
-		}
+		courseResponses[i] = course.ToResponse()
 	}
 
 	response := models.CourseListResponse{
@@ -701,15 +664,7 @@ func ListLessons(c *gin.Context) {
 	// Convert to response format
 	lessonResponses := make([]models.LessonResponse, len(lessons))
 	for i, lesson := range lessons {
-		lessonResponses[i] = models.LessonResponse{
-			ID:          lesson.ID,
-			CourseID:    lesson.CourseID,
-			Title:       lesson.Title,
-			Content:     lesson.Content,
-			OrderNumber: lesson.OrderNumber,
-			CreatedAt:   lesson.CreatedAt,
-			UpdatedAt:   lesson.UpdatedAt,
-		}
+		lessonResponses[i] = lesson.ToResponse()
 	}
 
 	response := models.LessonListResponse{
@@ -778,15 +733,7 @@ func ListLessonsByCourse(c *gin.Context) {
 	// Convert to response format
 	lessonResponses := make([]models.LessonResponse, len(lessons))
 	for i, lesson := range lessons {
-		lessonResponses[i] = models.LessonResponse{
-			ID:          lesson.ID,
-			CourseID:    lesson.CourseID,
-			Title:       lesson.Title,
-			Content:     lesson.Content,
-			OrderNumber: lesson.OrderNumber,
-			CreatedAt:   lesson.CreatedAt,
-			UpdatedAt:   lesson.UpdatedAt,
-		}
+		lessonResponses[i] = lesson.ToResponse()
 	}
 
 	response := models.LessonListResponse{
@@ -861,6 +808,12 @@ func CreateLesson(c *gin.Context) {
 		orderNumber = len(existingLessons) + 1
 	}
 
+	// Set default duration if not provided
+	duration := req.Duration
+	if duration == 0 {
+		duration = 30 // Default 30 minutes
+	}
+
 	lessonID := uuid.New()
 	lesson := &models.Lesson{
 		ID:          lessonID,
@@ -868,6 +821,7 @@ func CreateLesson(c *gin.Context) {
 		Title:       req.Title,
 		Content:     req.Content,
 		OrderNumber: orderNumber,
+		Duration:    duration,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 	}
@@ -924,11 +878,12 @@ func GetLesson(c *gin.Context) {
 			Title:       lesson.Title,
 			Content:     lesson.Content,
 			OrderNumber: lesson.OrderNumber,
+			Duration:    lesson.Duration,
 			CreatedAt:   lesson.CreatedAt,
 			UpdatedAt:   lesson.UpdatedAt,
 		},
 		CourseTitle: course.Title,
-		Duration:    30, // TODO: Calculate actual duration or store in database
+		Duration:    lesson.Duration,
 	}
 	c.JSON(http.StatusOK, response)
 }
@@ -1002,6 +957,9 @@ func UpdateLesson(c *gin.Context) {
 	}
 	if req.OrderNumber != 0 {
 		lesson.OrderNumber = req.OrderNumber
+	}
+	if req.Duration != 0 {
+		lesson.Duration = req.Duration
 	}
 	lesson.UpdatedAt = time.Now()
 
@@ -1325,11 +1283,7 @@ func ListUserEnrollments(c *gin.Context) {
 		}
 
 		enrollmentDetails[i] = models.EnrollmentDetailResponse{
-			EnrollmentResponse: models.EnrollmentResponse{
-				UserID:     enrollment.UserID,
-				CourseID:   enrollment.CourseID,
-				EnrolledAt: enrollment.EnrolledAt,
-			},
+			EnrollmentResponse: enrollment.ToResponse(),
 			CourseTitle: course.Title,
 			UserName:    user.Name,
 			Progress:    progress,
@@ -1374,19 +1328,26 @@ func ListEnrollments(c *gin.Context) {
 			course = &models.Course{Title: "Unknown Course"}
 		}
 
-		// Get progress (simplified for now)
-		progress := 0.0 // TODO: Calculate actual progress from progress table
+		// Get actual progress from progress table
+		progressRepo := database.GetRepoManager().Progress()
+		courseProgress, err := progressRepo.GetCourseProgress(c.Request.Context(), enrollment.UserID, enrollment.CourseID)
+		progress := 0.0
+		status := "enrolled"
+		if err == nil && courseProgress != nil {
+			progress = courseProgress.CompletionRate
+			if progress >= 100.0 {
+				status = "completed"
+			} else if progress > 0.0 {
+				status = "in_progress"
+			}
+		}
 
 		enrollmentDetails[i] = models.EnrollmentDetailResponse{
-			EnrollmentResponse: models.EnrollmentResponse{
-				UserID:     enrollment.UserID,
-				CourseID:   enrollment.CourseID,
-				EnrolledAt: enrollment.EnrolledAt,
-			},
+			EnrollmentResponse: enrollment.ToResponse(),
 			CourseTitle: course.Title,
 			UserName:    user.Name,
 			Progress:    progress,
-			Status:      "enrolled", // TODO: Calculate status based on progress
+			Status:      status,
 		}
 	}
 
@@ -1448,11 +1409,7 @@ func GetEnrollment(c *gin.Context) {
 	}
 
 	response := models.EnrollmentDetailResponse{
-		EnrollmentResponse: models.EnrollmentResponse{
-			UserID:     enrollment.UserID,
-			CourseID:   enrollment.CourseID,
-			EnrolledAt: enrollment.EnrolledAt,
-		},
+		EnrollmentResponse: enrollment.ToResponse(),
 		CourseTitle: course.Title,
 		UserName:    user.Name,
 		Progress:    progress,

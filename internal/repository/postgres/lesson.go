@@ -24,8 +24,8 @@ func NewLessonRepository(db *sql.DB) *LessonRepository {
 // Create inserts a new lesson into the database
 func (r *LessonRepository) Create(ctx context.Context, lesson *models.Lesson) error {
 	query := `
-		INSERT INTO lessons (id, course_id, title, content, order_number, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO lessons (id, course_id, title, content, order_number, duration, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`
 	
 	_, err := r.db.ExecContext(ctx, query,
@@ -34,6 +34,7 @@ func (r *LessonRepository) Create(ctx context.Context, lesson *models.Lesson) er
 		lesson.Title,
 		lesson.Content,
 		lesson.OrderNumber,
+		lesson.Duration,
 		lesson.CreatedAt,
 		lesson.UpdatedAt,
 	)
@@ -44,7 +45,7 @@ func (r *LessonRepository) Create(ctx context.Context, lesson *models.Lesson) er
 // GetByID retrieves a lesson by ID
 func (r *LessonRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Lesson, error) {
 	query := `
-		SELECT id, course_id, title, content, order_number, created_at, updated_at
+		SELECT id, course_id, title, content, order_number, duration, created_at, updated_at
 		FROM lessons
 		WHERE id = $1
 	`
@@ -56,6 +57,7 @@ func (r *LessonRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.L
 		&lesson.Title,
 		&lesson.Content,
 		&lesson.OrderNumber,
+		&lesson.Duration,
 		&lesson.CreatedAt,
 		&lesson.UpdatedAt,
 	)
@@ -71,7 +73,7 @@ func (r *LessonRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.L
 func (r *LessonRepository) Update(ctx context.Context, lesson *models.Lesson) error {
 	query := `
 		UPDATE lessons
-		SET title = $2, content = $3, order_number = $4, updated_at = $5
+		SET title = $2, content = $3, order_number = $4, duration = $5, updated_at = $6
 		WHERE id = $1
 	`
 	
@@ -80,6 +82,7 @@ func (r *LessonRepository) Update(ctx context.Context, lesson *models.Lesson) er
 		lesson.Title,
 		lesson.Content,
 		lesson.OrderNumber,
+		lesson.Duration,
 		lesson.UpdatedAt,
 	)
 	
@@ -89,7 +92,7 @@ func (r *LessonRepository) Update(ctx context.Context, lesson *models.Lesson) er
 // List retrieves lessons with pagination
 func (r *LessonRepository) List(ctx context.Context, pagination models.PaginationRequest) ([]models.Lesson, *models.PaginationResponse, error) {
 	baseQuery := `
-		SELECT id, course_id, title, content, order_number, created_at, updated_at
+		SELECT id, course_id, title, content, order_number, duration, created_at, updated_at
 		FROM lessons
 		ORDER BY order_number ASC, created_at DESC
 	`
@@ -102,7 +105,7 @@ func (r *LessonRepository) List(ctx context.Context, pagination models.Paginatio
 // GetByCourse retrieves lessons by course with pagination
 func (r *LessonRepository) GetByCourse(ctx context.Context, courseID uuid.UUID, pagination models.PaginationRequest) ([]models.Lesson, *models.PaginationResponse, error) {
 	baseQuery := `
-		SELECT id, course_id, title, content, order_number, created_at, updated_at
+		SELECT id, course_id, title, content, order_number, duration, created_at, updated_at
 		FROM lessons
 		WHERE course_id = $1
 		ORDER BY order_number ASC
@@ -243,6 +246,7 @@ func (r *LessonRepository) scanLesson(rows *sql.Rows) (*models.Lesson, error) {
 		&lesson.Title,
 		&lesson.Content,
 		&lesson.OrderNumber,
+		&lesson.Duration,
 		&lesson.CreatedAt,
 		&lesson.UpdatedAt,
 	)

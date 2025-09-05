@@ -9,6 +9,7 @@ type Config struct {
 	Server   ServerConfig
 	Database DatabaseConfig
 	Logging  LoggingConfig
+	JWT      JWTConfig
 }
 
 // ServerConfig holds server configuration
@@ -34,6 +35,12 @@ type LoggingConfig struct {
 	Output string
 }
 
+// JWTConfig holds JWT configuration
+type JWTConfig struct {
+	SecretKey     string
+	TokenDuration string
+}
+
 // Load loads configuration from environment variables
 func Load() *Config {
 	return &Config{
@@ -53,6 +60,10 @@ func Load() *Config {
 			Level:  getEnv("LOG_LEVEL", "info"),
 			Format: getEnv("LOG_FORMAT", "text"),
 			Output: getEnv("LOG_OUTPUT", "stdout"),
+		},
+		JWT: JWTConfig{
+			SecretKey:     getEnv("JWT_SECRET_KEY", "your-secret-key-change-this-in-production"),
+			TokenDuration: getEnv("JWT_TOKEN_DURATION", "24h"),
 		},
 	}
 }

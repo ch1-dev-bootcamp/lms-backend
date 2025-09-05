@@ -1,7 +1,10 @@
 package main
 
 import (
+	"time"
+
 	"github.com/gin-gonic/gin"
+	"github.com/your-org/lms-backend/internal/auth"
 	"github.com/your-org/lms-backend/internal/database"
 	"github.com/your-org/lms-backend/internal/handlers"
 	"github.com/your-org/lms-backend/internal/middleware"
@@ -29,6 +32,16 @@ func main() {
 	defer database.Close()
 
 	logger.Info("Database connected successfully!")
+
+	// Initialize JWT manager
+	tokenDuration, err := time.ParseDuration(cfg.JWT.TokenDuration)
+	if err != nil {
+		logger.Fatal("Invalid JWT token duration", logger.WithFields(map[string]interface{}{
+			"error": err.Error(),
+		}).Data)
+	}
+	jwtManager := auth.NewJWTManager(cfg.JWT.SecretKey, tokenDuration)
+	handlers.SetJWTManager(jwtManager)
 
 	// Set Gin mode
 	gin.SetMode(gin.ReleaseMode)
@@ -60,8 +73,9 @@ func main() {
 			auth.POST("/logout", handlers.Logout)
 		}
 		
-		// User routes
+		// User routes (protected)
 		users := v1.Group("/users")
+		users.Use(middleware.AuthMiddleware(jwtManager))
 		{
 			users.GET("/profile", handlers.GetProfile)
 			users.PUT("/profile", middleware.ValidateRequest[models.UpdateProfileRequest](), handlers.UpdateProfile)

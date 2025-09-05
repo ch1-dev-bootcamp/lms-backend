@@ -7,11 +7,20 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/your-org/lms-backend/internal/auth"
 	"github.com/your-org/lms-backend/internal/database"
 	apperrors "github.com/your-org/lms-backend/internal/errors"
 	"github.com/your-org/lms-backend/internal/middleware"
 	"github.com/your-org/lms-backend/internal/models"
 )
+
+// Global JWT manager - will be initialized in main
+var jwtManager *auth.JWTManager
+
+// SetJWTManager sets the global JWT manager
+func SetJWTManager(manager *auth.JWTManager) {
+	jwtManager = manager
+}
 
 // Helper function to create string pointer
 func stringPtr(s string) *string {
@@ -66,12 +75,19 @@ func Register(c *gin.Context) {
 		return
 	}
 
+	// Hash password
+	hashedPassword, err := auth.HashPassword(req.Password)
+	if err != nil {
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
 	// Create new user
 	userID := uuid.New()
 	user := &models.User{
 		ID:           userID,
 		Email:        req.Email,
-		PasswordHash: "hashed_password_" + req.Password, // TODO: Implement proper password hashing
+		PasswordHash: hashedPassword,
 		Name:         req.Name,
 		Role:         req.Role,
 		CreatedAt:    time.Now(),
@@ -113,16 +129,18 @@ func Login(c *gin.Context) {
 		return
 	}
 
-	// TODO: Implement proper password verification
-	// For now, just check if password matches our mock format
-	expectedHash := "hashed_password_" + req.Password
-	if user.PasswordHash != expectedHash {
+	// Verify password
+	if err := auth.VerifyPassword(user.PasswordHash, req.Password); err != nil {
 		middleware.AbortWithError(c, apperrors.NewValidationError("Invalid email or password"))
 		return
 	}
 
-	// TODO: Generate real JWT token
-	token := "jwt-token-" + uuid.New().String()[:8]
+	// Generate JWT token
+	token, err := jwtManager.GenerateToken(user.ID, user.Email, user.Role)
+	if err != nil {
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
 
 	response := models.LoginResponse{
 		Message: "Login successful",
@@ -143,9 +161,18 @@ func Logout(c *gin.Context) {
 
 // User handlers
 func GetProfile(c *gin.Context) {
-	// TODO: Extract user ID from JWT token
-	// For now, use a mock user ID
-	userID := uuid.MustParse("550e8400-e29b-41d4-a716-446655440000")
+	// Extract user ID from JWT token
+	userIDStr, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		middleware.AbortWithError(c, apperrors.NewUnauthorizedError("User not authenticated"))
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid user ID format"))
+		return
+	}
 	
 	userRepo := database.GetRepoManager().User()
 	user, err := userRepo.GetByID(c.Request.Context(), userID)
@@ -199,9 +226,18 @@ func UpdateProfile(c *gin.Context) {
 		return // Error already handled by middleware
 	}
 
-	// TODO: Extract user ID from JWT token
-	// For now, use a mock user ID
-	userID := uuid.MustParse("550e8400-e29b-41d4-a716-446655440000")
+	// Extract user ID from JWT token
+	userIDStr, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		middleware.AbortWithError(c, apperrors.NewUnauthorizedError("User not authenticated"))
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid user ID format"))
+		return
+	}
 	
 	userRepo := database.GetRepoManager().User()
 	user, err := userRepo.GetByID(c.Request.Context(), userID)

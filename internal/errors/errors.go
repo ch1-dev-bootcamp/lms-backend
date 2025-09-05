@@ -198,6 +198,14 @@ func NewInsufficientPermissionsError() *AppError {
 	return New(ErrorCodeInsufficientPermissions, "Insufficient permissions", http.StatusForbidden)
 }
 
+func NewUnauthorizedError(message string) *AppError {
+	return New(ErrorCodeInsufficientPermissions, message, http.StatusUnauthorized)
+}
+
+func NewForbiddenError(message string) *AppError {
+	return New(ErrorCodeInsufficientPermissions, message, http.StatusForbidden)
+}
+
 func NewPrerequisitesNotMetError(prerequisites []string) *AppError {
 	details := fmt.Sprintf("Missing prerequisites: %v", prerequisites)
 	return NewWithDetails(ErrorCodePrerequisitesNotMet, "Course prerequisites not met", details, http.StatusUnprocessableEntity)

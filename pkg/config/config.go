@@ -8,6 +8,7 @@ import (
 type Config struct {
 	Server   ServerConfig
 	Database DatabaseConfig
+	Logging  LoggingConfig
 }
 
 // ServerConfig holds server configuration
@@ -26,6 +27,13 @@ type DatabaseConfig struct {
 	SSLMode  string
 }
 
+// LoggingConfig holds logging configuration
+type LoggingConfig struct {
+	Level  string
+	Format string
+	Output string
+}
+
 // Load loads configuration from environment variables
 func Load() *Config {
 	return &Config{
@@ -40,6 +48,11 @@ func Load() *Config {
 			Password: getEnv("DB_PASSWORD", ""),
 			DBName:   getEnv("DB_NAME", "lms"),
 			SSLMode:  getEnv("DB_SSLMODE", "disable"),
+		},
+		Logging: LoggingConfig{
+			Level:  getEnv("LOG_LEVEL", "info"),
+			Format: getEnv("LOG_FORMAT", "text"),
+			Output: getEnv("LOG_OUTPUT", "stdout"),
 		},
 	}
 }

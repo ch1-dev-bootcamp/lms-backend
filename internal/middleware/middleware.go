@@ -1,26 +1,52 @@
 package middleware
 
 import (
-	"log"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/your-org/lms-backend/pkg/logger"
 )
 
 // Logging middleware logs HTTP requests
 func Logging() gin.HandlerFunc {
-	return gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
-		log.Printf(
-			"%s %s %d %v %s %s\n",
-			param.Method,
-			param.Path,
-			param.StatusCode,
-			param.Latency,
-			param.ClientIP,
-			param.ErrorMessage,
-		)
-		return ""
-	})
+	return func(c *gin.Context) {
+		start := time.Now()
+		path := c.Request.URL.Path
+		raw := c.Request.URL.RawQuery
+
+		// Process request
+		c.Next()
+
+		// Calculate latency
+		latency := time.Since(start)
+
+		// Get client IP
+		clientIP := c.ClientIP()
+		method := c.Request.Method
+		statusCode := c.Writer.Status()
+		bodySize := c.Writer.Size()
+
+		// Create log entry
+		entry := logger.WithFields(map[string]interface{}{
+			"method":      method,
+			"path":        path,
+			"raw_query":   raw,
+			"status_code": statusCode,
+			"latency":     latency,
+			"client_ip":   clientIP,
+			"body_size":   bodySize,
+		})
+
+		// Log based on status code
+		if statusCode >= 500 {
+			entry.Error("HTTP Request")
+		} else if statusCode >= 400 {
+			entry.Warn("HTTP Request")
+		} else {
+			entry.Info("HTTP Request")
+		}
+	}
 }
 
 // CORS middleware handles Cross-Origin Resource Sharing

@@ -3,11 +3,11 @@ package database
 import (
 	"database/sql"
 	"fmt"
-	"log"
 	"time"
 
 	_ "github.com/lib/pq"
 	"github.com/your-org/lms-backend/pkg/config"
+	"github.com/your-org/lms-backend/pkg/logger"
 )
 
 // DB holds the database connection
@@ -62,7 +62,12 @@ func Connect(cfg *ConnectionConfig) error {
 			if i == maxRetries-1 {
 				return fmt.Errorf("failed to ping database after %d attempts: %w", maxRetries, err)
 			}
-			log.Printf("Database connection attempt %d failed, retrying in %d seconds...", i+1, (i+1)*2)
+			logger.Warn("Database connection attempt failed, retrying...", logger.WithFields(map[string]interface{}{
+				"attempt": i + 1,
+				"max_retries": maxRetries,
+				"retry_in_seconds": (i + 1) * 2,
+				"error": err.Error(),
+			}).Data)
 			time.Sleep(time.Duration((i+1)*2) * time.Second)
 			continue
 		}
@@ -72,8 +77,12 @@ func Connect(cfg *ConnectionConfig) error {
 	// Set global DB variable
 	DB = db
 
-	log.Printf("Successfully connected to database - Host: %s, Port: %s, User: %s, Database: %s",
-		cfg.Host, cfg.Port, cfg.User, cfg.DBName)
+	logger.Info("Successfully connected to database", logger.WithFields(map[string]interface{}{
+		"host":     cfg.Host,
+		"port":     cfg.Port,
+		"user":     cfg.User,
+		"database": cfg.DBName,
+	}).Data)
 	
 	return nil
 }

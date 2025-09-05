@@ -1,28 +1,33 @@
 package main
 
 import (
-	"log"
-
 	"github.com/gin-gonic/gin"
 	"github.com/your-org/lms-backend/internal/database"
 	"github.com/your-org/lms-backend/internal/handlers"
 	"github.com/your-org/lms-backend/internal/middleware"
 	"github.com/your-org/lms-backend/pkg/config"
+	"github.com/your-org/lms-backend/pkg/logger"
 )
 
 func main() {
 	// Load configuration
 	cfg := config.Load()
 
+	// Initialize logger
+	logger.Initialize(cfg.Logging.Level, cfg.Logging.Format, cfg.Logging.Output)
+	logger.Info("Starting LMS Backend application")
+
 	// Initialize database connection
-	log.Println("Initializing database connection...")
+	logger.Info("Initializing database connection...")
 	dbConfig := database.NewConnectionConfig(cfg)
 	if err := database.Connect(dbConfig); err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
+		logger.Fatal("Failed to connect to database", logger.WithFields(map[string]interface{}{
+			"error": err.Error(),
+		}).Data)
 	}
 	defer database.Close()
 
-	log.Println("Database connected successfully!")
+	logger.Info("Database connected successfully!")
 
 	// Set Gin mode
 	gin.SetMode(gin.ReleaseMode)
@@ -52,6 +57,8 @@ func main() {
 		port = "8080"
 	}
 
-	log.Printf("Starting LMS server on port %s", port)
-	log.Fatal(r.Run(":" + port))
+	logger.WithField("port", port).Info("Starting LMS server")
+	logger.Fatal("Server stopped", logger.WithFields(map[string]interface{}{
+		"error": r.Run(":" + port).Error(),
+	}).Data)
 }

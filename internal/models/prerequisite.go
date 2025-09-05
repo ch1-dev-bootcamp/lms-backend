@@ -29,3 +29,16 @@ func (p *Prerequisite) ToResponse() PrerequisiteResponse {
 		RequiredCourseID: p.RequiredCourseID,
 	}
 }
+
+// PrerequisiteListResponse represents the response payload for listing prerequisites
+type PrerequisiteListResponse struct {
+	Prerequisites []PrerequisiteResponse `json:"prerequisites"`
+	Total         int                    `json:"total"`
+}
+
+// PrerequisiteCheckResponse represents the response payload for prerequisite checking
+type PrerequisiteCheckResponse struct {
+	MeetsPrerequisites   bool        `json:"meets_prerequisites" example:"true"`
+	MissingPrerequisites []uuid.UUID `json:"missing_prerequisites" example:"550e8400-e29b-41d4-a716-446655440000"`
+	Message              string      `json:"message" example:"Prerequisites checked successfully"`
+}

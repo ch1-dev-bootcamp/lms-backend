@@ -209,6 +209,30 @@ func (r *EnrollmentRepository) GetByUserAndCourse(ctx context.Context, userID, c
 	return enrollment, nil
 }
 
+// DeleteByUserAndCourse removes an enrollment by user and course
+func (r *EnrollmentRepository) DeleteByUserAndCourse(ctx context.Context, userID, courseID uuid.UUID) error {
+	query := `
+		DELETE FROM enrollments
+		WHERE user_id = $1 AND course_id = $2
+	`
+	
+	result, err := r.db.ExecContext(ctx, query, userID, courseID)
+	if err != nil {
+		return handleDatabaseError(err)
+	}
+	
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return handleDatabaseError(err)
+	}
+	
+	if rowsAffected == 0 {
+		return fmt.Errorf("enrollment not found")
+	}
+	
+	return nil
+}
+
 // GetWithDetails retrieves enrollment with additional details
 func (r *EnrollmentRepository) GetWithDetails(ctx context.Context, userID, courseID uuid.UUID) (*models.EnrollmentDetailResponse, error) {
 	query := `

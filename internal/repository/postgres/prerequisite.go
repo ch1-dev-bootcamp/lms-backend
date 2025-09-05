@@ -150,6 +150,30 @@ func (r *PrerequisiteRepository) GetPrerequisiteCourses(ctx context.Context, cou
 	return results, nil
 }
 
+// DeleteByCourseAndPrerequisite removes a prerequisite by course and required course
+func (r *PrerequisiteRepository) DeleteByCourseAndPrerequisite(ctx context.Context, courseID, requiredCourseID uuid.UUID) error {
+	query := `
+		DELETE FROM prerequisites
+		WHERE course_id = $1 AND prerequisite_course_id = $2
+	`
+	
+	result, err := r.db.ExecContext(ctx, query, courseID, requiredCourseID)
+	if err != nil {
+		return handleDatabaseError(err)
+	}
+	
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return handleDatabaseError(err)
+	}
+	
+	if rowsAffected == 0 {
+		return fmt.Errorf("prerequisite not found")
+	}
+	
+	return nil
+}
+
 // CheckPrerequisites checks if a user has completed all prerequisites for a course
 func (r *PrerequisiteRepository) CheckPrerequisites(ctx context.Context, userID, courseID uuid.UUID) (bool, []uuid.UUID, error) {
 	query := `

@@ -15,7 +15,6 @@ type Enrollment struct {
 
 // CreateEnrollmentRequest represents the request payload for creating an enrollment
 type CreateEnrollmentRequest struct {
-	UserID   string `json:"user_id" validate:"required,uuid" example:"550e8400-e29b-41d4-a716-446655440000"`
 	CourseID string `json:"course_id" validate:"required,uuid" example:"550e8400-e29b-41d4-a716-446655440000"`
 }
 

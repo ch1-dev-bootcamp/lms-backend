@@ -26,10 +26,9 @@ const (
 
 // CreateCourseRequest represents the request payload for creating a course
 type CreateCourseRequest struct {
-	Title        string  `json:"title" validate:"required,min=3,max=200" example:"Introduction to Go Programming"`
-	Description  *string `json:"description,omitempty" validate:"omitempty,max=1000" example:"Learn the basics of Go programming language"`
-	InstructorID string  `json:"instructor_id" validate:"required,uuid" example:"550e8400-e29b-41d4-a716-446655440000"`
-	Status       string  `json:"status,omitempty" validate:"omitempty,oneof=draft published archived" example:"published"`
+	Title       string  `json:"title" validate:"required,min=3,max=200" example:"Introduction to Go Programming"`
+	Description *string `json:"description,omitempty" validate:"omitempty,max=1000" example:"Learn the basics of Go programming language"`
+	Status      string  `json:"status,omitempty" validate:"omitempty,oneof=draft published archived" example:"published"`
 }
 
 // UpdateCourseRequest represents the request payload for updating a course

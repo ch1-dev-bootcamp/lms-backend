@@ -82,42 +82,110 @@ func main() {
 			users.DELETE("/:id", handlers.DeleteUser)
 		}
 		
-		// Course routes
+		// Course routes (public)
 		courses := v1.Group("/courses")
 		{
 			courses.GET("/", middleware.ValidateQuery[models.PaginationRequest](), handlers.ListCourses)
-			courses.POST("/", middleware.ValidateRequest[models.CreateCourseRequest](), handlers.CreateCourse)
+			courses.GET("/search", middleware.ValidateQuery[models.PaginationRequest](), handlers.SearchCourses)
 			courses.GET("/:id", handlers.GetCourse)
-			courses.PUT("/:id", middleware.ValidateRequest[models.UpdateCourseRequest](), handlers.UpdateCourse)
-			courses.DELETE("/:id", handlers.DeleteCourse)
 		}
 		
-		// Lesson routes
+		// Course management routes (protected - instructors and admins)
+		courseMgmt := v1.Group("/courses")
+		courseMgmt.Use(middleware.AuthMiddleware(jwtManager))
+		courseMgmt.Use(middleware.RequireRole(models.RoleInstructor))
+		{
+			courseMgmt.POST("/", middleware.ValidateRequest[models.CreateCourseRequest](), handlers.CreateCourse)
+			courseMgmt.PUT("/:id", middleware.ValidateRequest[models.UpdateCourseRequest](), handlers.UpdateCourse)
+			courseMgmt.DELETE("/:id", handlers.DeleteCourse)
+			courseMgmt.GET("/my-courses", middleware.ValidateQuery[models.PaginationRequest](), handlers.InstructorCourseList)
+		}
+		
+		// Lesson routes (public)
 		lessons := v1.Group("/lessons")
 		{
 			lessons.GET("/", middleware.ValidateQuery[models.PaginationRequest](), handlers.ListLessons)
-			lessons.POST("/", middleware.ValidateRequest[models.CreateLessonRequest](), handlers.CreateLesson)
 			lessons.GET("/:id", handlers.GetLesson)
-			lessons.PUT("/:id", middleware.ValidateRequest[models.UpdateLessonRequest](), handlers.UpdateLesson)
-			lessons.DELETE("/:id", handlers.DeleteLesson)
 		}
 		
-		// Enrollment routes
+		// Course lessons routes (public for published courses)
+		courseLessons := v1.Group("/courses/:course_id/lessons")
+		{
+			courseLessons.GET("/", middleware.ValidateQuery[models.PaginationRequest](), handlers.ListLessonsByCourse)
+		}
+		
+		// Lesson management routes (protected - instructors and admins)
+		lessonMgmt := v1.Group("/lessons")
+		lessonMgmt.Use(middleware.AuthMiddleware(jwtManager))
+		lessonMgmt.Use(middleware.RequireRole(models.RoleInstructor))
+		{
+			lessonMgmt.POST("/", middleware.ValidateRequest[models.CreateLessonRequest](), handlers.CreateLesson)
+			lessonMgmt.PUT("/:id", middleware.ValidateRequest[models.UpdateLessonRequest](), handlers.UpdateLesson)
+			lessonMgmt.DELETE("/:id", handlers.DeleteLesson)
+		}
+		
+		// Course lesson management routes (protected - instructors and admins)
+		courseLessonMgmt := v1.Group("/courses/:course_id/lessons")
+		courseLessonMgmt.Use(middleware.AuthMiddleware(jwtManager))
+		courseLessonMgmt.Use(middleware.RequireRole(models.RoleInstructor))
+		{
+			courseLessonMgmt.POST("/", middleware.ValidateRequest[models.CreateLessonRequest](), handlers.CreateLesson)
+			courseLessonMgmt.PUT("/:id", middleware.ValidateRequest[models.UpdateLessonRequest](), handlers.UpdateLesson)
+			courseLessonMgmt.DELETE("/:id", handlers.DeleteLesson)
+			courseLessonMgmt.PUT("/reorder", handlers.ReorderLessons)
+		}
+		
+		// Enrollment routes (public for enrollment, protected for management)
 		enrollments := v1.Group("/enrollments")
 		{
-			enrollments.POST("/", middleware.ValidateRequest[models.CreateEnrollmentRequest](), handlers.Enroll)
-			enrollments.GET("/", middleware.ValidateQuery[models.PaginationRequest](), handlers.ListEnrollments)
-			enrollments.GET("/:id", handlers.GetEnrollment)
-			enrollments.PUT("/:id", middleware.ValidateRequest[models.UpdateEnrollmentRequest](), handlers.UpdateEnrollment)
-			enrollments.DELETE("/:id", handlers.DeleteEnrollment)
+			enrollments.POST("/", middleware.AuthMiddleware(jwtManager), middleware.ValidateRequest[models.CreateEnrollmentRequest](), handlers.Enroll)
+			enrollments.GET("/my-enrollments", middleware.AuthMiddleware(jwtManager), middleware.ValidateQuery[models.PaginationRequest](), handlers.ListUserEnrollments)
+			enrollments.DELETE("/courses/:course_id", middleware.AuthMiddleware(jwtManager), handlers.Unenroll)
 		}
 		
-		// Progress routes
+		// Admin enrollment management routes
+		enrollmentMgmt := v1.Group("/enrollments")
+		enrollmentMgmt.Use(middleware.AuthMiddleware(jwtManager))
+		enrollmentMgmt.Use(middleware.RequireRole(models.RoleAdmin))
+		{
+			enrollmentMgmt.GET("/", middleware.ValidateQuery[models.PaginationRequest](), handlers.ListEnrollments)
+			enrollmentMgmt.GET("/:id", handlers.GetEnrollment)
+			enrollmentMgmt.PUT("/:id", middleware.ValidateRequest[models.UpdateEnrollmentRequest](), handlers.UpdateEnrollment)
+			enrollmentMgmt.DELETE("/:id", handlers.DeleteEnrollment)
+		}
+		
+		// Progress routes (protected - authenticated users only)
 		progress := v1.Group("/progress")
+		progress.Use(middleware.AuthMiddleware(jwtManager))
 		{
 			progress.POST("/complete", middleware.ValidateRequest[models.CompleteLessonRequest](), handlers.CompleteLesson)
-			progress.GET("/", handlers.GetProgress)
-			progress.GET("/:user_id", handlers.GetUserProgress)
+			progress.GET("/my-progress", handlers.GetUserProgress)
+			progress.GET("/courses/:course_id", handlers.GetCourseProgress)
+		}
+		
+		// Course completion routes (protected - authenticated users)
+		completions := v1.Group("/completions")
+		completions.Use(middleware.AuthMiddleware(jwtManager))
+		{
+			completions.GET("/", middleware.ValidateQuery[models.PaginationRequest](), handlers.ListUserCompletions)
+			completions.GET("/courses/:course_id", handlers.GetCourseCompletion)
+		}
+		
+		// Prerequisite routes (protected - instructors and admins only)
+		prerequisites := v1.Group("/prerequisites")
+		prerequisites.Use(middleware.AuthMiddleware(jwtManager))
+		prerequisites.Use(middleware.RequireRole(models.RoleInstructor))
+		{
+			prerequisites.POST("/", middleware.ValidateRequest[models.CreatePrerequisiteRequest](), handlers.CreatePrerequisite)
+			prerequisites.GET("/courses/:course_id", handlers.ListPrerequisites)
+			prerequisites.DELETE("/courses/:course_id/required/:required_course_id", handlers.DeletePrerequisite)
+		}
+		
+		// Prerequisite check routes (protected - authenticated users)
+		prerequisiteCheck := v1.Group("/prerequisites")
+		prerequisiteCheck.Use(middleware.AuthMiddleware(jwtManager))
+		{
+			prerequisiteCheck.GET("/check/courses/:course_id", handlers.CheckPrerequisites)
 		}
 		
 		// Certificate routes
@@ -126,6 +194,14 @@ func main() {
 			certificates.GET("/", middleware.ValidateQuery[models.PaginationRequest](), handlers.ListCertificates)
 			certificates.GET("/:id", handlers.GetCertificate)
 			certificates.GET("/verify/:id", handlers.VerifyCertificate)
+		}
+		
+		// Certificate management routes (admin only)
+		certificateMgmt := v1.Group("/certificates")
+		certificateMgmt.Use(middleware.AuthMiddleware(jwtManager))
+		certificateMgmt.Use(middleware.RequireRole(models.RoleAdmin))
+		{
+			certificateMgmt.POST("/", middleware.ValidateRequest[models.CreateCertificateRequest](), handlers.CreateCertificate)
 		}
 	}
 

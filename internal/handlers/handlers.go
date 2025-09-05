@@ -1,13 +1,16 @@
 package handlers
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/your-org/lms-backend/internal/auth"
+	"github.com/your-org/lms-backend/internal/certificate"
 	"github.com/your-org/lms-backend/internal/database"
 	apperrors "github.com/your-org/lms-backend/internal/errors"
 	"github.com/your-org/lms-backend/internal/middleware"
@@ -22,10 +25,6 @@ func SetJWTManager(manager *auth.JWTManager) {
 	jwtManager = manager
 }
 
-// Helper function to create string pointer
-func stringPtr(s string) *string {
-	return &s
-}
 
 // HealthCheck handles health check requests
 func HealthCheck(c *gin.Context) {
@@ -319,13 +318,10 @@ func ListCourses(c *gin.Context) {
 	}
 
 	courseRepo := database.GetRepoManager().Course()
-	courses, paginationResp, err := courseRepo.List(c.Request.Context(), pagination)
+	// Only show published courses for public listing
+	courses, paginationResp, err := courseRepo.GetByStatus(c.Request.Context(), models.CourseStatusPublished, pagination)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
-			Error:   "list_failed",
-			Message: "Failed to retrieve courses",
-			Code:    http.StatusInternalServerError,
-		})
+		middleware.ErrorHandlerFunc(c, err)
 		return
 	}
 
@@ -355,16 +351,22 @@ func CreateCourse(c *gin.Context) {
 		return // Error already handled by middleware
 	}
 
-	// Parse instructor ID from request
-	instructorID, err := uuid.Parse(req.InstructorID)
+	// Extract instructor ID from JWT token (authenticated user)
+	instructorIDStr, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		middleware.AbortWithError(c, apperrors.NewUnauthorizedError("User not authenticated"))
+		return
+	}
+
+	instructorID, err := uuid.Parse(instructorIDStr)
 	if err != nil {
 		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid instructor ID format"))
 		return
 	}
 
-	// Verify instructor exists
+	// Verify instructor exists and has instructor or admin role
 	userRepo := database.GetRepoManager().User()
-	_, err = userRepo.GetByID(c.Request.Context(), instructorID)
+	instructor, err := userRepo.GetByID(c.Request.Context(), instructorID)
 	if err != nil {
 		var appErr *apperrors.AppError
 		if errors.As(err, &appErr) {
@@ -377,13 +379,25 @@ func CreateCourse(c *gin.Context) {
 		return
 	}
 
+	// Check if user has instructor or admin role
+	if instructor.Role != models.RoleInstructor && instructor.Role != models.RoleAdmin {
+		middleware.AbortWithError(c, apperrors.NewForbiddenError("Only instructors and admins can create courses"))
+		return
+	}
+
+	// Set default status if not provided
+	status := req.Status
+	if status == "" {
+		status = models.CourseStatusDraft
+	}
+
 	courseID := uuid.New()
 	course := &models.Course{
 		ID:           courseID,
 		Title:        req.Title,
 		Description:  req.Description,
 		InstructorID: instructorID,
-		Status:       req.Status,
+		Status:       status,
 		CreatedAt:    time.Now(),
 		UpdatedAt:    time.Now(),
 	}
@@ -446,11 +460,7 @@ func UpdateCourse(c *gin.Context) {
 	courseIDStr := c.Param("id")
 	courseID, err := uuid.Parse(courseIDStr)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, models.ErrorResponse{
-			Error:   "invalid_id",
-			Message: "Invalid course ID format",
-			Code:    http.StatusBadRequest,
-		})
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid course ID format"))
 		return
 	}
 
@@ -459,14 +469,42 @@ func UpdateCourse(c *gin.Context) {
 		return // Error already handled by middleware
 	}
 
+	// Extract user ID from JWT token
+	userIDStr, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		middleware.AbortWithError(c, apperrors.NewUnauthorizedError("User not authenticated"))
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid user ID format"))
+		return
+	}
+
 	courseRepo := database.GetRepoManager().Course()
 	course, err := courseRepo.GetByID(c.Request.Context(), courseID)
 	if err != nil {
-		c.JSON(http.StatusNotFound, models.ErrorResponse{
-			Error:   "course_not_found",
-			Message: "Course not found",
-			Code:    http.StatusNotFound,
-		})
+		var appErr *apperrors.AppError
+		if errors.As(err, &appErr) {
+			if appErr.Code == apperrors.ErrorCodeNotFound {
+				middleware.AbortWithError(c, apperrors.NewCourseNotFoundError())
+				return
+			}
+		}
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Check ownership - only instructor or admin can update
+	userRole, exists := middleware.GetUserRoleFromContext(c)
+	if !exists {
+		middleware.AbortWithError(c, apperrors.NewUnauthorizedError("User role not found"))
+		return
+	}
+
+	if userRole != models.RoleAdmin && course.InstructorID != userID {
+		middleware.AbortWithError(c, apperrors.NewForbiddenError("Only the course instructor or admin can update this course"))
 		return
 	}
 
@@ -483,11 +521,7 @@ func UpdateCourse(c *gin.Context) {
 	course.UpdatedAt = time.Now()
 
 	if err := courseRepo.Update(c.Request.Context(), course); err != nil {
-		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
-			Error:   "update_failed",
-			Message: "Failed to update course",
-			Code:    http.StatusInternalServerError,
-		})
+		middleware.ErrorHandlerFunc(c, err)
 		return
 	}
 
@@ -504,21 +538,51 @@ func DeleteCourse(c *gin.Context) {
 	courseIDStr := c.Param("id")
 	courseID, err := uuid.Parse(courseIDStr)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, models.ErrorResponse{
-			Error:   "invalid_id",
-			Message: "Invalid course ID format",
-			Code:    http.StatusBadRequest,
-		})
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid course ID format"))
+		return
+	}
+
+	// Extract user ID from JWT token
+	userIDStr, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		middleware.AbortWithError(c, apperrors.NewUnauthorizedError("User not authenticated"))
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid user ID format"))
 		return
 	}
 
 	courseRepo := database.GetRepoManager().Course()
+	course, err := courseRepo.GetByID(c.Request.Context(), courseID)
+	if err != nil {
+		var appErr *apperrors.AppError
+		if errors.As(err, &appErr) {
+			if appErr.Code == apperrors.ErrorCodeNotFound {
+				middleware.AbortWithError(c, apperrors.NewCourseNotFoundError())
+				return
+			}
+		}
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Check ownership - only instructor or admin can delete
+	userRole, exists := middleware.GetUserRoleFromContext(c)
+	if !exists {
+		middleware.AbortWithError(c, apperrors.NewUnauthorizedError("User role not found"))
+		return
+	}
+
+	if userRole != models.RoleAdmin && course.InstructorID != userID {
+		middleware.AbortWithError(c, apperrors.NewForbiddenError("Only the course instructor or admin can delete this course"))
+		return
+	}
+
 	if err := courseRepo.Delete(c.Request.Context(), courseID); err != nil {
-		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
-			Error:   "delete_failed",
-			Message: "Failed to delete course",
-			Code:    http.StatusInternalServerError,
-		})
+		middleware.ErrorHandlerFunc(c, err)
 		return
 	}
 
@@ -527,6 +591,95 @@ func DeleteCourse(c *gin.Context) {
 		Data: gin.H{
 			"course_id": courseID,
 		},
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+// InstructorCourseList handles listing courses for instructors (all their courses)
+func InstructorCourseList(c *gin.Context) {
+	pagination, exists := middleware.GetValidatedQuery[models.PaginationRequest](c)
+	if !exists {
+		pagination = models.PaginationRequest{Page: 1, PageSize: 10}
+	}
+
+	// Extract instructor ID from JWT token
+	instructorIDStr, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		middleware.AbortWithError(c, apperrors.NewUnauthorizedError("User not authenticated"))
+		return
+	}
+
+	instructorID, err := uuid.Parse(instructorIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid instructor ID format"))
+		return
+	}
+
+	courseRepo := database.GetRepoManager().Course()
+	courses, paginationResp, err := courseRepo.GetByInstructor(c.Request.Context(), instructorID, pagination)
+	if err != nil {
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Convert to response format
+	courseResponses := make([]models.CourseResponse, len(courses))
+	for i, course := range courses {
+		courseResponses[i] = models.CourseResponse{
+			ID:           course.ID,
+			Title:        course.Title,
+			Description:  course.Description,
+			InstructorID: course.InstructorID,
+			Status:       course.Status,
+			CreatedAt:    course.CreatedAt,
+			UpdatedAt:    course.UpdatedAt,
+		}
+	}
+
+	response := models.CourseListResponse{
+		Courses:    courseResponses,
+		Pagination: *paginationResp,
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+// SearchCourses handles searching published courses
+func SearchCourses(c *gin.Context) {
+	pagination, exists := middleware.GetValidatedQuery[models.PaginationRequest](c)
+	if !exists {
+		pagination = models.PaginationRequest{Page: 1, PageSize: 10}
+	}
+
+	query := c.Query("q")
+	if query == "" {
+		middleware.AbortWithError(c, apperrors.NewValidationError("Search query is required"))
+		return
+	}
+
+	courseRepo := database.GetRepoManager().Course()
+	courses, paginationResp, err := courseRepo.Search(c.Request.Context(), query, pagination)
+	if err != nil {
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Convert to response format
+	courseResponses := make([]models.CourseResponse, len(courses))
+	for i, course := range courses {
+		courseResponses[i] = models.CourseResponse{
+			ID:           course.ID,
+			Title:        course.Title,
+			Description:  course.Description,
+			InstructorID: course.InstructorID,
+			Status:       course.Status,
+			CreatedAt:    course.CreatedAt,
+			UpdatedAt:    course.UpdatedAt,
+		}
+	}
+
+	response := models.CourseListResponse{
+		Courses:    courseResponses,
+		Pagination: *paginationResp,
 	}
 	c.JSON(http.StatusOK, response)
 }
@@ -566,6 +719,83 @@ func ListLessons(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
+// ListLessonsByCourse handles listing lessons for a specific course
+func ListLessonsByCourse(c *gin.Context) {
+	courseIDStr := c.Param("course_id")
+	courseID, err := uuid.Parse(courseIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid course ID format"))
+		return
+	}
+
+	pagination, exists := middleware.GetValidatedQuery[models.PaginationRequest](c)
+	if !exists {
+		pagination = models.PaginationRequest{Page: 1, PageSize: 10}
+	}
+
+	// Verify course exists
+	courseRepo := database.GetRepoManager().Course()
+	course, err := courseRepo.GetByID(c.Request.Context(), courseID)
+	if err != nil {
+		var appErr *apperrors.AppError
+		if errors.As(err, &appErr) {
+			if appErr.Code == apperrors.ErrorCodeNotFound {
+				middleware.AbortWithError(c, apperrors.NewCourseNotFoundError())
+				return
+			}
+		}
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Check if course is published or user has access
+	userRole, exists := middleware.GetUserRoleFromContext(c)
+	if !exists {
+		// Public access - only show published courses
+		if course.Status != models.CourseStatusPublished {
+			middleware.AbortWithError(c, apperrors.NewForbiddenError("Course is not published"))
+			return
+		}
+	} else {
+		// Authenticated user - check if they have access
+		userIDStr, exists := middleware.GetUserIDFromContext(c)
+		if exists {
+			userID, err := uuid.Parse(userIDStr)
+			if err == nil && userRole != models.RoleAdmin && course.InstructorID != userID && course.Status != models.CourseStatusPublished {
+				middleware.AbortWithError(c, apperrors.NewForbiddenError("Access denied to this course"))
+				return
+			}
+		}
+	}
+
+	lessonRepo := database.GetRepoManager().Lesson()
+	lessons, paginationResp, err := lessonRepo.GetByCourse(c.Request.Context(), courseID, pagination)
+	if err != nil {
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Convert to response format
+	lessonResponses := make([]models.LessonResponse, len(lessons))
+	for i, lesson := range lessons {
+		lessonResponses[i] = models.LessonResponse{
+			ID:          lesson.ID,
+			CourseID:    lesson.CourseID,
+			Title:       lesson.Title,
+			Content:     lesson.Content,
+			OrderNumber: lesson.OrderNumber,
+			CreatedAt:   lesson.CreatedAt,
+			UpdatedAt:   lesson.UpdatedAt,
+		}
+	}
+
+	response := models.LessonListResponse{
+		Lessons:    lessonResponses,
+		Pagination: *paginationResp,
+	}
+	c.JSON(http.StatusOK, response)
+}
+
 func CreateLesson(c *gin.Context) {
 	req, exists := middleware.GetValidatedRequest[models.CreateLessonRequest](c)
 	if !exists {
@@ -579,19 +809,56 @@ func CreateLesson(c *gin.Context) {
 		return
 	}
 
-	// Verify course exists
+	// Extract user ID from JWT token
+	userIDStr, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		middleware.AbortWithError(c, apperrors.NewUnauthorizedError("User not authenticated"))
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid user ID format"))
+		return
+	}
+
+	// Verify course exists and check ownership
 	courseRepo := database.GetRepoManager().Course()
-	_, err = courseRepo.GetByID(c.Request.Context(), courseID)
+	course, err := courseRepo.GetByID(c.Request.Context(), courseID)
 	if err != nil {
 		var appErr *apperrors.AppError
 		if errors.As(err, &appErr) {
 			if appErr.Code == apperrors.ErrorCodeNotFound {
-				middleware.AbortWithError(c, apperrors.NewForeignKeyViolationError("Course not found"))
+				middleware.AbortWithError(c, apperrors.NewCourseNotFoundError())
 				return
 			}
 		}
 		middleware.ErrorHandlerFunc(c, err)
 		return
+	}
+
+	// Check ownership - only course instructor or admin can create lessons
+	userRole, exists := middleware.GetUserRoleFromContext(c)
+	if !exists {
+		middleware.AbortWithError(c, apperrors.NewUnauthorizedError("User role not found"))
+		return
+	}
+
+	if userRole != models.RoleAdmin && course.InstructorID != userID {
+		middleware.AbortWithError(c, apperrors.NewForbiddenError("Only the course instructor or admin can create lessons"))
+		return
+	}
+
+	// Auto-assign order number if not provided
+	orderNumber := req.OrderNumber
+	if orderNumber == 0 {
+		lessonRepo := database.GetRepoManager().Lesson()
+		existingLessons, _, err := lessonRepo.GetByCourse(c.Request.Context(), courseID, models.PaginationRequest{Page: 1, PageSize: 1000})
+		if err != nil {
+			middleware.ErrorHandlerFunc(c, err)
+			return
+		}
+		orderNumber = len(existingLessons) + 1
 	}
 
 	lessonID := uuid.New()
@@ -600,7 +867,7 @@ func CreateLesson(c *gin.Context) {
 		CourseID:    courseID,
 		Title:       req.Title,
 		Content:     req.Content,
-		OrderNumber: req.OrderNumber,
+		OrderNumber: orderNumber,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 	}
@@ -679,6 +946,19 @@ func UpdateLesson(c *gin.Context) {
 		return // Error already handled by middleware
 	}
 
+	// Extract user ID from JWT token
+	userIDStr, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		middleware.AbortWithError(c, apperrors.NewUnauthorizedError("User not authenticated"))
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid user ID format"))
+		return
+	}
+
 	lessonRepo := database.GetRepoManager().Lesson()
 	lesson, err := lessonRepo.GetByID(c.Request.Context(), lessonID)
 	if err != nil {
@@ -690,6 +970,26 @@ func UpdateLesson(c *gin.Context) {
 			}
 		}
 		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Check ownership through course
+	courseRepo := database.GetRepoManager().Course()
+	course, err := courseRepo.GetByID(c.Request.Context(), lesson.CourseID)
+	if err != nil {
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Check ownership - only course instructor or admin can update lessons
+	userRole, exists := middleware.GetUserRoleFromContext(c)
+	if !exists {
+		middleware.AbortWithError(c, apperrors.NewUnauthorizedError("User role not found"))
+		return
+	}
+
+	if userRole != models.RoleAdmin && course.InstructorID != userID {
+		middleware.AbortWithError(c, apperrors.NewForbiddenError("Only the course instructor or admin can update lessons"))
 		return
 	}
 
@@ -727,7 +1027,53 @@ func DeleteLesson(c *gin.Context) {
 		return
 	}
 
+	// Extract user ID from JWT token
+	userIDStr, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		middleware.AbortWithError(c, apperrors.NewUnauthorizedError("User not authenticated"))
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid user ID format"))
+		return
+	}
+
 	lessonRepo := database.GetRepoManager().Lesson()
+	lesson, err := lessonRepo.GetByID(c.Request.Context(), lessonID)
+	if err != nil {
+		var appErr *apperrors.AppError
+		if errors.As(err, &appErr) {
+			if appErr.Code == apperrors.ErrorCodeNotFound {
+				middleware.AbortWithError(c, apperrors.NewLessonNotFoundError())
+				return
+			}
+		}
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Check ownership through course
+	courseRepo := database.GetRepoManager().Course()
+	course, err := courseRepo.GetByID(c.Request.Context(), lesson.CourseID)
+	if err != nil {
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Check ownership - only course instructor or admin can delete lessons
+	userRole, exists := middleware.GetUserRoleFromContext(c)
+	if !exists {
+		middleware.AbortWithError(c, apperrors.NewUnauthorizedError("User role not found"))
+		return
+	}
+
+	if userRole != models.RoleAdmin && course.InstructorID != userID {
+		middleware.AbortWithError(c, apperrors.NewForbiddenError("Only the course instructor or admin can delete lessons"))
+		return
+	}
+
 	if err := lessonRepo.Delete(c.Request.Context(), lessonID); err != nil {
 		middleware.ErrorHandlerFunc(c, err)
 		return
@@ -742,6 +1088,92 @@ func DeleteLesson(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
+// ReorderLessons handles reordering lessons within a course
+func ReorderLessons(c *gin.Context) {
+	courseIDStr := c.Param("course_id")
+	courseID, err := uuid.Parse(courseIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid course ID format"))
+		return
+	}
+
+	// Extract user ID from JWT token
+	userIDStr, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		middleware.AbortWithError(c, apperrors.NewUnauthorizedError("User not authenticated"))
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid user ID format"))
+		return
+	}
+
+	// Check course ownership
+	courseRepo := database.GetRepoManager().Course()
+	course, err := courseRepo.GetByID(c.Request.Context(), courseID)
+	if err != nil {
+		var appErr *apperrors.AppError
+		if errors.As(err, &appErr) {
+			if appErr.Code == apperrors.ErrorCodeNotFound {
+				middleware.AbortWithError(c, apperrors.NewCourseNotFoundError())
+				return
+			}
+		}
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Check ownership - only course instructor or admin can reorder lessons
+	userRole, exists := middleware.GetUserRoleFromContext(c)
+	if !exists {
+		middleware.AbortWithError(c, apperrors.NewUnauthorizedError("User role not found"))
+		return
+	}
+
+	if userRole != models.RoleAdmin && course.InstructorID != userID {
+		middleware.AbortWithError(c, apperrors.NewForbiddenError("Only the course instructor or admin can reorder lessons"))
+		return
+	}
+
+	// Parse reorder request
+	var req struct {
+		LessonOrders map[string]int `json:"lesson_orders" validate:"required" example:"{\"lesson-id-1\": 1, \"lesson-id-2\": 2}"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidRequestError("Invalid JSON format"))
+		return
+	}
+
+	// Convert string keys to UUIDs
+	lessonOrders := make(map[uuid.UUID]int)
+	for lessonIDStr, order := range req.LessonOrders {
+		lessonID, err := uuid.Parse(lessonIDStr)
+		if err != nil {
+			middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid lesson ID format: "+lessonIDStr))
+			return
+		}
+		lessonOrders[lessonID] = order
+	}
+
+	// Reorder lessons
+	lessonRepo := database.GetRepoManager().Lesson()
+	if err := lessonRepo.ReorderLessons(c.Request.Context(), courseID, lessonOrders); err != nil {
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	response := models.SuccessResponse{
+		Message: "Lessons reordered successfully",
+		Data: gin.H{
+			"course_id": courseID,
+		},
+	}
+	c.JSON(http.StatusOK, response)
+}
+
 // Enrollment handlers
 func Enroll(c *gin.Context) {
 	req, exists := middleware.GetValidatedRequest[models.CreateEnrollmentRequest](c)
@@ -749,27 +1181,34 @@ func Enroll(c *gin.Context) {
 		return // Error already handled by middleware
 	}
 
-	// Parse user and course IDs
-	userID, err := uuid.Parse(req.UserID)
-	if err != nil {
-		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid user ID format"))
-		return
-	}
-
+	// Parse course ID from request
 	courseID, err := uuid.Parse(req.CourseID)
 	if err != nil {
 		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid course ID format"))
 		return
 	}
 
-	// Verify user exists
-	userRepo := database.GetRepoManager().User()
-	_, err = userRepo.GetByID(c.Request.Context(), userID)
+	// Extract user ID from JWT token
+	userIDStr, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		middleware.AbortWithError(c, apperrors.NewUnauthorizedError("User not authenticated"))
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid user ID format"))
+		return
+	}
+
+	// Verify course exists and is published
+	courseRepo := database.GetRepoManager().Course()
+	course, err := courseRepo.GetByID(c.Request.Context(), courseID)
 	if err != nil {
 		var appErr *apperrors.AppError
 		if errors.As(err, &appErr) {
 			if appErr.Code == apperrors.ErrorCodeNotFound {
-				middleware.AbortWithError(c, apperrors.NewForeignKeyViolationError("User not found"))
+				middleware.AbortWithError(c, apperrors.NewCourseNotFoundError())
 				return
 			}
 		}
@@ -777,18 +1216,22 @@ func Enroll(c *gin.Context) {
 		return
 	}
 
-	// Verify course exists
-	courseRepo := database.GetRepoManager().Course()
-	_, err = courseRepo.GetByID(c.Request.Context(), courseID)
+	// Check if course is published
+	if course.Status != models.CourseStatusPublished {
+		middleware.AbortWithError(c, apperrors.NewForbiddenError("Course is not published and cannot be enrolled in"))
+		return
+	}
+
+	// Check prerequisites
+	prerequisiteRepo := database.GetRepoManager().Prerequisite()
+	meetsPrerequisites, missingPrerequisites, err := prerequisiteRepo.CheckPrerequisites(c.Request.Context(), userID, courseID)
 	if err != nil {
-		var appErr *apperrors.AppError
-		if errors.As(err, &appErr) {
-			if appErr.Code == apperrors.ErrorCodeNotFound {
-				middleware.AbortWithError(c, apperrors.NewForeignKeyViolationError("Course not found"))
-				return
-			}
-		}
 		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	if !meetsPrerequisites {
+		middleware.AbortWithError(c, apperrors.NewValidationError("Prerequisites not met. Missing required courses: " + fmt.Sprintf("%v", missingPrerequisites)))
 		return
 	}
 
@@ -821,6 +1264,84 @@ func Enroll(c *gin.Context) {
 		EnrolledAt:   enrollment.EnrolledAt,
 	}
 	c.JSON(http.StatusCreated, response)
+}
+
+// ListUserEnrollments handles listing enrollments for the authenticated user
+func ListUserEnrollments(c *gin.Context) {
+	pagination, exists := middleware.GetValidatedQuery[models.PaginationRequest](c)
+	if !exists {
+		pagination = models.PaginationRequest{Page: 1, PageSize: 10}
+	}
+
+	// Extract user ID from JWT token
+	userIDStr, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		middleware.AbortWithError(c, apperrors.NewUnauthorizedError("User not authenticated"))
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid user ID format"))
+		return
+	}
+
+	enrollmentRepo := database.GetRepoManager().Enrollment()
+	enrollments, paginationResp, err := enrollmentRepo.GetByUser(c.Request.Context(), userID, pagination)
+	if err != nil {
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Convert to detailed response format
+	enrollmentDetails := make([]models.EnrollmentDetailResponse, len(enrollments))
+	for i, enrollment := range enrollments {
+		// Get course details
+		courseRepo := database.GetRepoManager().Course()
+		course, err := courseRepo.GetByID(c.Request.Context(), enrollment.CourseID)
+		if err != nil {
+			course = &models.Course{Title: "Unknown Course"}
+		}
+
+		// Get user details
+		userRepo := database.GetRepoManager().User()
+		user, err := userRepo.GetByID(c.Request.Context(), enrollment.UserID)
+		if err != nil {
+			user = &models.User{Name: "Unknown User"}
+		}
+
+		// Get actual progress from progress table
+		progressRepo := database.GetRepoManager().Progress()
+		courseProgress, err := progressRepo.GetCourseProgress(c.Request.Context(), enrollment.UserID, enrollment.CourseID)
+		progress := 0.0
+		status := "enrolled"
+		if err == nil && courseProgress != nil {
+			progress = courseProgress.CompletionRate
+			if progress >= 100.0 {
+				status = "completed"
+			} else if progress > 0.0 {
+				status = "in_progress"
+			}
+		}
+
+		enrollmentDetails[i] = models.EnrollmentDetailResponse{
+			EnrollmentResponse: models.EnrollmentResponse{
+				UserID:     enrollment.UserID,
+				CourseID:   enrollment.CourseID,
+				EnrolledAt: enrollment.EnrolledAt,
+			},
+			CourseTitle: course.Title,
+			UserName:    user.Name,
+			Progress:    progress,
+			Status:      status,
+		}
+	}
+
+	response := models.EnrollmentListResponse{
+		Enrollments: enrollmentDetails,
+		Pagination:  *paginationResp,
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 func ListEnrollments(c *gin.Context) {
@@ -912,8 +1433,19 @@ func GetEnrollment(c *gin.Context) {
 		course = &models.Course{Title: "Unknown Course"}
 	}
 
-	// Get progress (simplified for now)
-	progress := 0.0 // TODO: Calculate actual progress from progress table
+	// Get actual progress from progress table
+	progressRepo := database.GetRepoManager().Progress()
+	courseProgress, err := progressRepo.GetCourseProgress(c.Request.Context(), enrollment.UserID, enrollment.CourseID)
+	progress := 0.0
+	status := "enrolled"
+	if err == nil && courseProgress != nil {
+		progress = courseProgress.CompletionRate
+		if progress >= 100.0 {
+			status = "completed"
+		} else if progress > 0.0 {
+			status = "in_progress"
+		}
+	}
 
 	response := models.EnrollmentDetailResponse{
 		EnrollmentResponse: models.EnrollmentResponse{
@@ -924,7 +1456,7 @@ func GetEnrollment(c *gin.Context) {
 		CourseTitle: course.Title,
 		UserName:    user.Name,
 		Progress:    progress,
-		Status:      "enrolled", // TODO: Calculate status based on progress
+		Status:      status,
 	}
 	c.JSON(http.StatusOK, response)
 }
@@ -999,34 +1531,36 @@ func DeleteEnrollment(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-// Progress handlers
-func CompleteLesson(c *gin.Context) {
-	req, exists := middleware.GetValidatedRequest[models.CompleteLessonRequest](c)
-	if !exists {
-		return // Error already handled by middleware
+// Unenroll handles unenrolling a user from a course
+func Unenroll(c *gin.Context) {
+	courseIDStr := c.Param("course_id")
+	courseID, err := uuid.Parse(courseIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid course ID format"))
+		return
 	}
 
-	// Parse user and lesson IDs
-	userID, err := uuid.Parse(req.UserID)
+	// Extract user ID from JWT token
+	userIDStr, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		middleware.AbortWithError(c, apperrors.NewUnauthorizedError("User not authenticated"))
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
 		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid user ID format"))
 		return
 	}
 
-	lessonID, err := uuid.Parse(req.LessonID)
-	if err != nil {
-		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid lesson ID format"))
-		return
-	}
-
-	// Verify user exists
-	userRepo := database.GetRepoManager().User()
-	_, err = userRepo.GetByID(c.Request.Context(), userID)
+	// Check if enrollment exists
+	enrollmentRepo := database.GetRepoManager().Enrollment()
+	_, err = enrollmentRepo.GetByUserAndCourse(c.Request.Context(), userID, courseID)
 	if err != nil {
 		var appErr *apperrors.AppError
 		if errors.As(err, &appErr) {
 			if appErr.Code == apperrors.ErrorCodeNotFound {
-				middleware.AbortWithError(c, apperrors.NewForeignKeyViolationError("User not found"))
+				middleware.AbortWithError(c, apperrors.NewEnrollmentNotFoundError())
 				return
 			}
 		}
@@ -1034,14 +1568,72 @@ func CompleteLesson(c *gin.Context) {
 		return
 	}
 
-	// Verify lesson exists
+	// Delete enrollment
+	if err := enrollmentRepo.DeleteByUserAndCourse(c.Request.Context(), userID, courseID); err != nil {
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	response := models.SuccessResponse{
+		Message: "Successfully unenrolled from course",
+		Data: gin.H{
+			"user_id":   userID,
+			"course_id": courseID,
+		},
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+// Progress handlers
+func CompleteLesson(c *gin.Context) {
+	req, exists := middleware.GetValidatedRequest[models.CompleteLessonRequest](c)
+	if !exists {
+		return // Error already handled by middleware
+	}
+
+	// Parse lesson ID from request
+	lessonID, err := uuid.Parse(req.LessonID)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid lesson ID format"))
+		return
+	}
+
+	// Extract user ID from JWT token
+	userIDStr, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		middleware.AbortWithError(c, apperrors.NewUnauthorizedError("User not authenticated"))
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid user ID format"))
+		return
+	}
+
+	// Verify lesson exists and get course info
 	lessonRepo := database.GetRepoManager().Lesson()
-	_, err = lessonRepo.GetByID(c.Request.Context(), lessonID)
+	lesson, err := lessonRepo.GetByID(c.Request.Context(), lessonID)
 	if err != nil {
 		var appErr *apperrors.AppError
 		if errors.As(err, &appErr) {
 			if appErr.Code == apperrors.ErrorCodeNotFound {
-				middleware.AbortWithError(c, apperrors.NewForeignKeyViolationError("Lesson not found"))
+				middleware.AbortWithError(c, apperrors.NewLessonNotFoundError())
+				return
+			}
+		}
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Verify user is enrolled in the course
+	enrollmentRepo := database.GetRepoManager().Enrollment()
+	_, err = enrollmentRepo.GetByUserAndCourse(c.Request.Context(), userID, lesson.CourseID)
+	if err != nil {
+		var appErr *apperrors.AppError
+		if errors.As(err, &appErr) {
+			if appErr.Code == apperrors.ErrorCodeNotFound {
+				middleware.AbortWithError(c, apperrors.NewForbiddenError("User is not enrolled in this course"))
 				return
 			}
 		}
@@ -1073,60 +1665,594 @@ func CompleteLesson(c *gin.Context) {
 		}
 	}
 
+	// Get course progress for completion rate
+	courseProgress, err := progressRepo.GetCourseProgress(c.Request.Context(), userID, lesson.CourseID)
+	if err != nil {
+		// If we can't get course progress, just return basic info
+		courseProgress = &models.ProgressDetailResponse{
+			CompletionRate: 0.0,
+		}
+	}
+
+	// Check if course is completed (100% completion)
+	courseCompleted := false
+	if courseProgress.CompletionRate >= 100.0 {
+		// Mark course as completed
+		courseCompletionRepo := database.GetRepoManager().CourseCompletion()
+		_, err := courseCompletionRepo.GetByUserAndCourse(c.Request.Context(), userID, lesson.CourseID)
+		if err != nil {
+			// Course not yet marked as completed, create completion record
+			completion := &models.CourseCompletion{
+				UserID:         userID,
+				CourseID:       lesson.CourseID,
+				CompletedAt:    time.Now(),
+				CompletionRate: courseProgress.CompletionRate,
+			}
+			
+			if err := courseCompletionRepo.Create(c.Request.Context(), completion); err != nil {
+				// Log error but don't fail the request
+				fmt.Printf("Failed to mark course as completed: %v\n", err)
+			} else {
+				courseCompleted = true
+				
+				// Generate certificate for completed course
+				if err := generateCertificateForCompletedCourse(c.Request.Context(), userID, lesson.CourseID); err != nil {
+					// Log error but don't fail the request
+					fmt.Printf("Failed to generate certificate: %v\n", err)
+				}
+			}
+		} else {
+			// Course already marked as completed
+			courseCompleted = true
+		}
+	}
+
 	response := models.CompleteLessonResponse{
-		Message:        "Lesson completed successfully",
-		ProgressID:     uuid.New(), // TODO: Return actual progress ID
-		UserID:         userID,
-		LessonID:       lessonID,
-		CompletionRate: 100.0,
-		CompletedAt:    time.Now(),
-		Status:         "success",
+		Message:         "Lesson completed successfully",
+		ProgressID:      lessonID, // Using lesson ID as progress identifier
+		UserID:          userID,
+		LessonID:        lessonID,
+		CompletionRate:  courseProgress.CompletionRate,
+		CompletedAt:     time.Now(),
+		Status:          "success",
+		CourseCompleted: courseCompleted,
 	}
 	c.JSON(http.StatusOK, response)
 }
 
-func GetProgress(c *gin.Context) {
-	response := models.ProgressDetailResponse{
-		UserID:           uuid.New(),
-		CourseID:         uuid.New(),
-		CourseTitle:      "Introduction to Go Programming",
-		TotalLessons:     12,
-		CompletedLessons: 3,
-		CompletionRate:   25.0,
-		LastActivity:     time.Now().AddDate(0, 0, -1),
-		EnrolledAt:       time.Now().AddDate(0, -1, 0),
-	}
-	c.JSON(http.StatusOK, response)
-}
-
+// GetUserProgress handles getting progress for the authenticated user
 func GetUserProgress(c *gin.Context) {
-	userID := c.Param("user_id")
-	progress := []models.ProgressDetailResponse{
-		{
-			UserID:           uuid.MustParse(userID),
-			CourseID:         uuid.New(),
-			CourseTitle:      "Introduction to Go Programming",
-			TotalLessons:     12,
-			CompletedLessons: 3,
-			CompletionRate:   25.0,
-			LastActivity:     time.Now().AddDate(0, 0, -1),
-			EnrolledAt:       time.Now().AddDate(0, -1, 0),
-		},
-		{
-			UserID:           uuid.MustParse(userID),
-			CourseID:         uuid.New(),
-			CourseTitle:      "Advanced Web Development",
-			TotalLessons:     15,
-			CompletedLessons: 15,
-			CompletionRate:   100.0,
-			LastActivity:     time.Now().AddDate(0, 0, -5),
-			EnrolledAt:       time.Now().AddDate(0, -2, 0),
-		},
+	// Extract user ID from JWT token
+	userIDStr, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		middleware.AbortWithError(c, apperrors.NewUnauthorizedError("User not authenticated"))
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid user ID format"))
+		return
+	}
+
+	progressRepo := database.GetRepoManager().Progress()
+	progress, err := progressRepo.GetUserProgress(c.Request.Context(), userID)
+	if err != nil {
+		middleware.ErrorHandlerFunc(c, err)
+		return
 	}
 
 	response := models.ProgressListResponse{
 		Progress: progress,
 		Total:    len(progress),
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+// GetCourseProgress handles getting progress for a specific course
+func GetCourseProgress(c *gin.Context) {
+	courseIDStr := c.Param("course_id")
+	courseID, err := uuid.Parse(courseIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid course ID format"))
+		return
+	}
+
+	// Extract user ID from JWT token
+	userIDStr, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		middleware.AbortWithError(c, apperrors.NewUnauthorizedError("User not authenticated"))
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid user ID format"))
+		return
+	}
+
+	// Verify user is enrolled in the course
+	enrollmentRepo := database.GetRepoManager().Enrollment()
+	_, err = enrollmentRepo.GetByUserAndCourse(c.Request.Context(), userID, courseID)
+	if err != nil {
+		var appErr *apperrors.AppError
+		if errors.As(err, &appErr) {
+			if appErr.Code == apperrors.ErrorCodeNotFound {
+				middleware.AbortWithError(c, apperrors.NewForbiddenError("User is not enrolled in this course"))
+				return
+			}
+		}
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	progressRepo := database.GetRepoManager().Progress()
+	progress, err := progressRepo.GetCourseProgress(c.Request.Context(), userID, courseID)
+	if err != nil {
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, progress)
+}
+
+// generateCertificateForCompletedCourse generates a certificate for a completed course
+func generateCertificateForCompletedCourse(ctx context.Context, userID, courseID uuid.UUID) error {
+	// Check if certificate already exists
+	certificateRepo := database.GetRepoManager().Certificate()
+	existingCert, err := certificateRepo.GetByUserAndCourse(ctx, userID, courseID)
+	if err == nil && existingCert != nil {
+		// Certificate already exists, no need to create another
+		return nil
+	}
+
+	// Generate unique certificate code
+	codeGenerator := certificate.NewCertificateCodeGenerator()
+	certificateCode, err := codeGenerator.GenerateCodeWithUserID(userID)
+	if err != nil {
+		return fmt.Errorf("failed to generate certificate code: %w", err)
+	}
+
+	// Create certificate
+	cert := &models.Certificate{
+		ID:              uuid.New(),
+		UserID:          userID,
+		CourseID:        courseID,
+		IssuedAt:        time.Now(),
+		CertificateCode: certificateCode,
+	}
+
+	// Save certificate to database
+	if err := certificateRepo.Create(ctx, cert); err != nil {
+		return fmt.Errorf("failed to create certificate: %w", err)
+	}
+
+	return nil
+}
+
+// Course completion handlers
+func ListUserCompletions(c *gin.Context) {
+	pagination, exists := middleware.GetValidatedQuery[models.PaginationRequest](c)
+	if !exists {
+		pagination = models.PaginationRequest{Page: 1, PageSize: 10}
+	}
+
+	// Extract user ID from JWT token
+	userIDStr, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		middleware.AbortWithError(c, apperrors.NewUnauthorizedError("User not authenticated"))
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid user ID format"))
+		return
+	}
+
+	courseCompletionRepo := database.GetRepoManager().CourseCompletion()
+	completions, paginationResp, err := courseCompletionRepo.GetUserCompletionsWithDetails(c.Request.Context(), userID, pagination)
+	if err != nil {
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	response := models.CourseCompletionListResponse{
+		Completions: completions,
+		Total:       paginationResp.Total,
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+func GetCourseCompletion(c *gin.Context) {
+	courseIDStr := c.Param("course_id")
+	courseID, err := uuid.Parse(courseIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid course ID format"))
+		return
+	}
+
+	// Extract user ID from JWT token
+	userIDStr, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		middleware.AbortWithError(c, apperrors.NewUnauthorizedError("User not authenticated"))
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid user ID format"))
+		return
+	}
+
+	courseCompletionRepo := database.GetRepoManager().CourseCompletion()
+	completion, err := courseCompletionRepo.GetByUserAndCourse(c.Request.Context(), userID, courseID)
+	if err != nil {
+		var appErr *apperrors.AppError
+		if errors.As(err, &appErr) {
+			if appErr.Code == apperrors.ErrorCodeNotFound {
+				middleware.AbortWithError(c, apperrors.NewValidationError("Course not completed"))
+				return
+			}
+		}
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Get course details
+	courseRepo := database.GetRepoManager().Course()
+	course, err := courseRepo.GetByID(c.Request.Context(), courseID)
+	if err != nil {
+		course = &models.Course{Title: "Unknown Course"}
+	}
+
+	// Get progress details
+	progressRepo := database.GetRepoManager().Progress()
+	courseProgress, err := progressRepo.GetCourseProgress(c.Request.Context(), userID, courseID)
+	if err != nil {
+		courseProgress = &models.ProgressDetailResponse{
+			TotalLessons:     0,
+			CompletedLessons: 0,
+		}
+	}
+
+	response := models.CourseCompletionResponse{
+		UserID:           completion.UserID,
+		CourseID:         completion.CourseID,
+		CourseTitle:      course.Title,
+		CompletedAt:      completion.CompletedAt,
+		CompletionRate:   completion.CompletionRate,
+		TotalLessons:     courseProgress.TotalLessons,
+		CompletedLessons: courseProgress.CompletedLessons,
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+// CreateCertificate handles manual certificate creation (admin only)
+func CreateCertificate(c *gin.Context) {
+	req, exists := middleware.GetValidatedRequest[models.CreateCertificateRequest](c)
+	if !exists {
+		return // Error already handled by middleware
+	}
+
+	// Parse user and course IDs
+	userID, err := uuid.Parse(req.UserID)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid user ID format"))
+		return
+	}
+
+	courseID, err := uuid.Parse(req.CourseID)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid course ID format"))
+		return
+	}
+
+	// Verify user exists
+	userRepo := database.GetRepoManager().User()
+	_, err = userRepo.GetByID(c.Request.Context(), userID)
+	if err != nil {
+		var appErr *apperrors.AppError
+		if errors.As(err, &appErr) {
+			if appErr.Code == apperrors.ErrorCodeNotFound {
+				middleware.AbortWithError(c, apperrors.NewValidationError("User not found"))
+				return
+			}
+		}
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Verify course exists
+	courseRepo := database.GetRepoManager().Course()
+	_, err = courseRepo.GetByID(c.Request.Context(), courseID)
+	if err != nil {
+		var appErr *apperrors.AppError
+		if errors.As(err, &appErr) {
+			if appErr.Code == apperrors.ErrorCodeNotFound {
+				middleware.AbortWithError(c, apperrors.NewCourseNotFoundError())
+				return
+			}
+		}
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Check if certificate already exists
+	certificateRepo := database.GetRepoManager().Certificate()
+	_, err = certificateRepo.GetByUserAndCourse(c.Request.Context(), userID, courseID)
+	if err == nil {
+		middleware.AbortWithError(c, apperrors.NewValidationError("Certificate already exists for this user and course"))
+		return
+	}
+
+	// Generate unique certificate code
+	codeGenerator := certificate.NewCertificateCodeGenerator()
+	certificateCode, err := codeGenerator.GenerateCodeWithUserID(userID)
+	if err != nil {
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Create certificate
+	cert := &models.Certificate{
+		ID:              uuid.New(),
+		UserID:          userID,
+		CourseID:        courseID,
+		IssuedAt:        time.Now(),
+		CertificateCode: certificateCode,
+	}
+
+	if err := certificateRepo.Create(c.Request.Context(), cert); err != nil {
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	response := models.SuccessResponse{
+		Message: "Certificate created successfully",
+		Data:    cert.ToResponse(),
+	}
+	c.JSON(http.StatusCreated, response)
+}
+
+// Prerequisite handlers
+func CreatePrerequisite(c *gin.Context) {
+	req, exists := middleware.GetValidatedRequest[models.CreatePrerequisiteRequest](c)
+	if !exists {
+		return // Error already handled by middleware
+	}
+
+	// Parse course IDs
+	courseID, err := uuid.Parse(req.CourseID)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid course ID format"))
+		return
+	}
+
+	requiredCourseID, err := uuid.Parse(req.RequiredCourseID)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid required course ID format"))
+		return
+	}
+
+	// Prevent self-referencing prerequisites
+	if courseID == requiredCourseID {
+		middleware.AbortWithError(c, apperrors.NewValidationError("Course cannot be a prerequisite for itself"))
+		return
+	}
+
+	// Extract user ID from JWT token
+	userIDStr, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		middleware.AbortWithError(c, apperrors.NewUnauthorizedError("User not authenticated"))
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid user ID format"))
+		return
+	}
+
+	// Verify course exists and check ownership
+	courseRepo := database.GetRepoManager().Course()
+	course, err := courseRepo.GetByID(c.Request.Context(), courseID)
+	if err != nil {
+		var appErr *apperrors.AppError
+		if errors.As(err, &appErr) {
+			if appErr.Code == apperrors.ErrorCodeNotFound {
+				middleware.AbortWithError(c, apperrors.NewCourseNotFoundError())
+				return
+			}
+		}
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Check ownership - only course instructor or admin can add prerequisites
+	userRole, exists := middleware.GetUserRoleFromContext(c)
+	if !exists {
+		middleware.AbortWithError(c, apperrors.NewUnauthorizedError("User role not found"))
+		return
+	}
+
+	if userRole != models.RoleAdmin && course.InstructorID != userID {
+		middleware.AbortWithError(c, apperrors.NewForbiddenError("Only the course instructor or admin can add prerequisites"))
+		return
+	}
+
+	// Verify required course exists
+	_, err = courseRepo.GetByID(c.Request.Context(), requiredCourseID)
+	if err != nil {
+		var appErr *apperrors.AppError
+		if errors.As(err, &appErr) {
+			if appErr.Code == apperrors.ErrorCodeNotFound {
+				middleware.AbortWithError(c, apperrors.NewValidationError("Required course not found"))
+				return
+			}
+		}
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Create prerequisite
+	prerequisite := &models.Prerequisite{
+		CourseID:         courseID,
+		RequiredCourseID: requiredCourseID,
+	}
+
+	prerequisiteRepo := database.GetRepoManager().Prerequisite()
+	if err := prerequisiteRepo.Create(c.Request.Context(), prerequisite); err != nil {
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	response := models.SuccessResponse{
+		Message: "Prerequisite added successfully",
+		Data: gin.H{
+			"course_id":          courseID,
+			"required_course_id": requiredCourseID,
+		},
+	}
+	c.JSON(http.StatusCreated, response)
+}
+
+func ListPrerequisites(c *gin.Context) {
+	courseIDStr := c.Param("course_id")
+	courseID, err := uuid.Parse(courseIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid course ID format"))
+		return
+	}
+
+	prerequisiteRepo := database.GetRepoManager().Prerequisite()
+	prerequisites, err := prerequisiteRepo.GetPrerequisiteCourses(c.Request.Context(), courseID)
+	if err != nil {
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Convert to response format
+	prerequisiteResponses := make([]models.PrerequisiteResponse, len(prerequisites))
+	for i, course := range prerequisites {
+		prerequisiteResponses[i] = models.PrerequisiteResponse{
+			CourseID:         courseID,
+			RequiredCourseID: course.ID,
+		}
+	}
+
+	response := models.PrerequisiteListResponse{
+		Prerequisites: prerequisiteResponses,
+		Total:         len(prerequisiteResponses),
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+func DeletePrerequisite(c *gin.Context) {
+	courseIDStr := c.Param("course_id")
+	courseID, err := uuid.Parse(courseIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid course ID format"))
+		return
+	}
+
+	requiredCourseIDStr := c.Param("required_course_id")
+	requiredCourseID, err := uuid.Parse(requiredCourseIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid required course ID format"))
+		return
+	}
+
+	// Extract user ID from JWT token
+	userIDStr, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		middleware.AbortWithError(c, apperrors.NewUnauthorizedError("User not authenticated"))
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid user ID format"))
+		return
+	}
+
+	// Verify course exists and check ownership
+	courseRepo := database.GetRepoManager().Course()
+	course, err := courseRepo.GetByID(c.Request.Context(), courseID)
+	if err != nil {
+		var appErr *apperrors.AppError
+		if errors.As(err, &appErr) {
+			if appErr.Code == apperrors.ErrorCodeNotFound {
+				middleware.AbortWithError(c, apperrors.NewCourseNotFoundError())
+				return
+			}
+		}
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Check ownership - only course instructor or admin can remove prerequisites
+	userRole, exists := middleware.GetUserRoleFromContext(c)
+	if !exists {
+		middleware.AbortWithError(c, apperrors.NewUnauthorizedError("User role not found"))
+		return
+	}
+
+	if userRole != models.RoleAdmin && course.InstructorID != userID {
+		middleware.AbortWithError(c, apperrors.NewForbiddenError("Only the course instructor or admin can remove prerequisites"))
+		return
+	}
+
+	// Delete prerequisite
+	prerequisiteRepo := database.GetRepoManager().Prerequisite()
+	if err := prerequisiteRepo.DeleteByCourseAndPrerequisite(c.Request.Context(), courseID, requiredCourseID); err != nil {
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	response := models.SuccessResponse{
+		Message: "Prerequisite removed successfully",
+		Data: gin.H{
+			"course_id":          courseID,
+			"required_course_id": requiredCourseID,
+		},
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+// CheckPrerequisites handles checking if user meets prerequisites for a course
+func CheckPrerequisites(c *gin.Context) {
+	courseIDStr := c.Param("course_id")
+	courseID, err := uuid.Parse(courseIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid course ID format"))
+		return
+	}
+
+	// Extract user ID from JWT token
+	userIDStr, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		middleware.AbortWithError(c, apperrors.NewUnauthorizedError("User not authenticated"))
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid user ID format"))
+		return
+	}
+
+	prerequisiteRepo := database.GetRepoManager().Prerequisite()
+	meetsPrerequisites, missingPrerequisites, err := prerequisiteRepo.CheckPrerequisites(c.Request.Context(), userID, courseID)
+	if err != nil {
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	response := models.PrerequisiteCheckResponse{
+		MeetsPrerequisites:    meetsPrerequisites,
+		MissingPrerequisites:  missingPrerequisites,
+		Message:               "Prerequisites checked successfully",
 	}
 	c.JSON(http.StatusOK, response)
 }
@@ -1178,31 +2304,73 @@ func ListCertificates(c *gin.Context) {
 }
 
 func GetCertificate(c *gin.Context) {
-	certificateID := c.Param("id")
-	response := models.CertificateDetailResponse{
-		CertificateResponse: models.CertificateResponse{
-			ID:              uuid.MustParse(certificateID),
-			UserID:          uuid.New(),
-			CourseID:        uuid.New(),
-			IssuedAt:        time.Now().AddDate(0, -1, 0),
-			CertificateCode: "CERT-" + uuid.New().String()[:8],
-		},
-		UserName:    "John Doe",
-		CourseTitle: "Introduction to Go Programming",
-		Status:      "valid",
+	certificateIDStr := c.Param("id")
+	certificateID, err := uuid.Parse(certificateIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid certificate ID format"))
+		return
 	}
-	c.JSON(http.StatusOK, response)
+
+	certificateRepo := database.GetRepoManager().Certificate()
+	certificate, err := certificateRepo.GetWithDetails(c.Request.Context(), certificateID)
+	if err != nil {
+		var appErr *apperrors.AppError
+		if errors.As(err, &appErr) {
+			if appErr.Code == apperrors.ErrorCodeNotFound {
+				middleware.AbortWithError(c, apperrors.NewValidationError("Certificate not found"))
+				return
+			}
+		}
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, certificate)
 }
 
 func VerifyCertificate(c *gin.Context) {
-	certificateID := c.Param("id")
+	certificateCode := c.Param("id")
+	
+	certificateRepo := database.GetRepoManager().Certificate()
+	certificate, err := certificateRepo.GetByCode(c.Request.Context(), certificateCode)
+	if err != nil {
+		var appErr *apperrors.AppError
+		if errors.As(err, &appErr) {
+			if appErr.Code == apperrors.ErrorCodeNotFound {
+				response := models.VerifyCertificateResponse{
+					CertificateID: certificateCode,
+					Valid:         false,
+					Message:       "Certificate not found or invalid",
+				}
+				c.JSON(http.StatusOK, response)
+				return
+			}
+		}
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Get user and course details
+	userRepo := database.GetRepoManager().User()
+	user, err := userRepo.GetByID(c.Request.Context(), certificate.UserID)
+	if err != nil {
+		user = &models.User{Name: "Unknown User"}
+	}
+
+	courseRepo := database.GetRepoManager().Course()
+	course, err := courseRepo.GetByID(c.Request.Context(), certificate.CourseID)
+	if err != nil {
+		course = &models.Course{Title: "Unknown Course"}
+	}
+
 	response := models.VerifyCertificateResponse{
-		CertificateID: certificateID,
+		CertificateID: certificateCode,
 		Valid:         true,
-		UserName:      "John Doe",
-		CourseTitle:   "Introduction to Go Programming",
-		IssuedAt:      time.Now().AddDate(0, -1, 0),
+		UserName:      user.Name,
+		CourseTitle:   course.Title,
+		IssuedAt:      certificate.IssuedAt,
 		VerifiedAt:    time.Now(),
+		Message:       "Certificate is valid",
 	}
 	c.JSON(http.StatusOK, response)
 }

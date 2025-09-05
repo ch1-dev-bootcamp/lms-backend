@@ -22,7 +22,7 @@ type CreateLessonRequest struct {
 	CourseID    string  `json:"course_id" validate:"required,uuid" example:"550e8400-e29b-41d4-a716-446655440000"`
 	Title       string  `json:"title" validate:"required,min=3,max=200" example:"Getting Started with Go"`
 	Content     *string `json:"content,omitempty" validate:"omitempty,max=5000" example:"This lesson covers the basics of Go programming..."`
-	OrderNumber int     `json:"order_number" validate:"required,min=1" example:"1"`
+	OrderNumber int     `json:"order_number,omitempty" validate:"omitempty,min=1" example:"1"`
 }
 
 // UpdateLessonRequest represents the request payload for updating a lesson

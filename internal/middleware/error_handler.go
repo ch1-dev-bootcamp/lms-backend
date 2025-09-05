@@ -61,7 +61,7 @@ func handleGenericError(c *gin.Context, err error) {
 }
 
 // handleUnknownError handles unknown error types
-func handleUnknownError(c *gin.Context, err interface{}) {
+func handleUnknownError(c *gin.Context, _ interface{}) {
 	requestID := getRequestID(c)
 	
 	// Create a generic internal error

@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/lib/pq"
@@ -159,38 +158,3 @@ func handleDatabaseError(err error) error {
 	}
 }
 
-// parseTime parses a time string from the database
-func parseTime(timeStr sql.NullString) *time.Time {
-	if !timeStr.Valid {
-		return nil
-	}
-	
-	t, err := time.Parse(time.RFC3339, timeStr.String)
-	if err != nil {
-		return nil
-	}
-	
-	return &t
-}
-
-// parseUUID parses a UUID string from the database
-func parseUUID(uuidStr sql.NullString) *uuid.UUID {
-	if !uuidStr.Valid {
-		return nil
-	}
-	
-	id, err := uuid.Parse(uuidStr.String)
-	if err != nil {
-		return nil
-	}
-	
-	return &id
-}
-
-// parseString parses a string from the database
-func parseString(str sql.NullString) *string {
-	if !str.Valid {
-		return nil
-	}
-	return &str.String
-}

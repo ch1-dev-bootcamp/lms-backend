@@ -105,7 +105,6 @@ type ProgressDetailResponse struct {
 }
 
 type CompleteLessonRequest struct {
-	UserID   string `json:"user_id" validate:"required,uuid" example:"550e8400-e29b-41d4-a716-446655440000"`
 	LessonID string `json:"lesson_id" validate:"required,uuid" example:"550e8400-e29b-41d4-a716-446655440000"`
 }
 
@@ -117,6 +116,32 @@ type CompleteLessonResponse struct {
 	CompletionRate float64   `json:"completion_rate" example:"100.0"`
 	CompletedAt    time.Time `json:"completed_at" example:"2023-01-01T00:00:00Z"`
 	Status         string    `json:"status" example:"success"`
+	CourseCompleted bool     `json:"course_completed" example:"false"`
+}
+
+// CourseCompletion represents a completed course
+type CourseCompletion struct {
+	UserID        uuid.UUID `json:"user_id" db:"user_id"`
+	CourseID      uuid.UUID `json:"course_id" db:"course_id"`
+	CompletedAt   time.Time `json:"completed_at" db:"completed_at"`
+	CompletionRate float64  `json:"completion_rate" db:"completion_rate"`
+}
+
+// CourseCompletionResponse represents the response payload for course completion
+type CourseCompletionResponse struct {
+	UserID         uuid.UUID `json:"user_id" example:"550e8400-e29b-41d4-a716-446655440000"`
+	CourseID       uuid.UUID `json:"course_id" example:"550e8400-e29b-41d4-a716-446655440000"`
+	CourseTitle    string    `json:"course_title" example:"Introduction to Go Programming"`
+	CompletedAt    time.Time `json:"completed_at" example:"2023-01-01T00:00:00Z"`
+	CompletionRate float64   `json:"completion_rate" example:"100.0"`
+	TotalLessons   int       `json:"total_lessons" example:"12"`
+	CompletedLessons int     `json:"completed_lessons" example:"12"`
+}
+
+// CourseCompletionListResponse represents the response payload for listing course completions
+type CourseCompletionListResponse struct {
+	Completions []CourseCompletionResponse `json:"completions"`
+	Total       int                        `json:"total"`
 }
 
 // Enhanced Certificate DTOs
@@ -139,6 +164,7 @@ type VerifyCertificateResponse struct {
 	CourseTitle   string    `json:"course_title" example:"Introduction to Go Programming"`
 	IssuedAt      time.Time `json:"issued_at" example:"2023-01-01T00:00:00Z"`
 	VerifiedAt    time.Time `json:"verified_at" example:"2023-01-01T00:00:00Z"`
+	Message       string    `json:"message" example:"Certificate is valid"`
 }
 
 // Common Response DTOs are defined in common.go

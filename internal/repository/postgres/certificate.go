@@ -202,6 +202,30 @@ func (r *CertificateRepository) GetByCourse(ctx context.Context, courseID uuid.U
 	return results, paginationResp, nil
 }
 
+// GetByUserAndCourse retrieves a certificate by user and course
+func (r *CertificateRepository) GetByUserAndCourse(ctx context.Context, userID, courseID uuid.UUID) (*models.Certificate, error) {
+	query := `
+		SELECT id, user_id, course_id, issued_at, certificate_code
+		FROM certificates
+		WHERE user_id = $1 AND course_id = $2
+	`
+	
+	certificate := &models.Certificate{}
+	err := r.db.QueryRowContext(ctx, query, userID, courseID).Scan(
+		&certificate.ID,
+		&certificate.UserID,
+		&certificate.CourseID,
+		&certificate.IssuedAt,
+		&certificate.CertificateCode,
+	)
+	
+	if err != nil {
+		return nil, handleDatabaseError(err)
+	}
+	
+	return certificate, nil
+}
+
 // GetByCode retrieves a certificate by its verification code
 func (r *CertificateRepository) GetByCode(ctx context.Context, code string) (*models.Certificate, error) {
 	query := `

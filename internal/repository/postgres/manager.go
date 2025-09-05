@@ -14,13 +14,14 @@ type RepositoryManager struct {
 	db *sql.DB
 	
 	// Repositories
-	userRepo         repository.UserRepository
-	courseRepo       repository.CourseRepository
-	lessonRepo       repository.LessonRepository
-	enrollmentRepo   repository.EnrollmentRepository
-	progressRepo     repository.ProgressRepository
-	certificateRepo  repository.CertificateRepository
-	prerequisiteRepo repository.PrerequisiteRepository
+	userRepo             repository.UserRepository
+	courseRepo           repository.CourseRepository
+	lessonRepo           repository.LessonRepository
+	enrollmentRepo       repository.EnrollmentRepository
+	progressRepo         repository.ProgressRepository
+	certificateRepo      repository.CertificateRepository
+	prerequisiteRepo     repository.PrerequisiteRepository
+	courseCompletionRepo repository.CourseCompletionRepository
 }
 
 // NewRepositoryManager creates a new repository manager with connection pooling
@@ -37,6 +38,7 @@ func NewRepositoryManager(db *sql.DB) repository.RepositoryManager {
 	manager.progressRepo = NewProgressRepository(db)
 	manager.certificateRepo = NewCertificateRepository(db)
 	manager.prerequisiteRepo = NewPrerequisiteRepository(db)
+	manager.courseCompletionRepo = NewCourseCompletionRepository(db)
 	
 	return manager
 }
@@ -68,6 +70,10 @@ func (m *RepositoryManager) Certificate() repository.CertificateRepository {
 
 func (m *RepositoryManager) Prerequisite() repository.PrerequisiteRepository {
 	return m.prerequisiteRepo
+}
+
+func (m *RepositoryManager) CourseCompletion() repository.CourseCompletionRepository {
+	return m.courseCompletionRepo
 }
 
 // WithTransaction executes a function within a database transaction

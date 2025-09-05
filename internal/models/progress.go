@@ -15,7 +15,6 @@ type Progress struct {
 
 // CreateProgressRequest represents the request payload for creating progress
 type CreateProgressRequest struct {
-	UserID   string `json:"user_id" validate:"required,uuid" example:"550e8400-e29b-41d4-a716-446655440000"`
 	LessonID string `json:"lesson_id" validate:"required,uuid" example:"550e8400-e29b-41d4-a716-446655440000"`
 }
 

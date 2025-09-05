@@ -48,6 +48,7 @@ type EnrollmentRepository interface {
 	GetByUser(ctx context.Context, userID uuid.UUID, pagination models.PaginationRequest) ([]models.Enrollment, *models.PaginationResponse, error)
 	GetByCourse(ctx context.Context, courseID uuid.UUID, pagination models.PaginationRequest) ([]models.Enrollment, *models.PaginationResponse, error)
 	GetByUserAndCourse(ctx context.Context, userID, courseID uuid.UUID) (*models.Enrollment, error)
+	DeleteByUserAndCourse(ctx context.Context, userID, courseID uuid.UUID) error
 	GetWithDetails(ctx context.Context, userID, courseID uuid.UUID) (*models.EnrollmentDetailResponse, error)
 	GetUserEnrollmentsWithDetails(ctx context.Context, userID uuid.UUID, pagination models.PaginationRequest) ([]models.EnrollmentDetailResponse, *models.PaginationResponse, error)
 }
@@ -68,6 +69,7 @@ type CertificateRepository interface {
 	BaseRepository[models.Certificate]
 	GetByUser(ctx context.Context, userID uuid.UUID, pagination models.PaginationRequest) ([]models.Certificate, *models.PaginationResponse, error)
 	GetByCourse(ctx context.Context, courseID uuid.UUID, pagination models.PaginationRequest) ([]models.Certificate, *models.PaginationResponse, error)
+	GetByUserAndCourse(ctx context.Context, userID, courseID uuid.UUID) (*models.Certificate, error)
 	GetByCode(ctx context.Context, code string) (*models.Certificate, error)
 	GetWithDetails(ctx context.Context, id uuid.UUID) (*models.CertificateDetailResponse, error)
 	VerifyCertificate(ctx context.Context, id uuid.UUID) (*models.VerifyCertificateResponse, error)
@@ -78,7 +80,17 @@ type PrerequisiteRepository interface {
 	BaseRepository[models.Prerequisite]
 	GetByCourse(ctx context.Context, courseID uuid.UUID) ([]models.Prerequisite, error)
 	GetPrerequisiteCourses(ctx context.Context, courseID uuid.UUID) ([]models.Course, error)
+	DeleteByCourseAndPrerequisite(ctx context.Context, courseID, requiredCourseID uuid.UUID) error
 	CheckPrerequisites(ctx context.Context, userID, courseID uuid.UUID) (bool, []uuid.UUID, error)
+}
+
+// CourseCompletionRepository defines operations for course completion tracking
+type CourseCompletionRepository interface {
+	BaseRepository[models.CourseCompletion]
+	GetByUser(ctx context.Context, userID uuid.UUID, pagination models.PaginationRequest) ([]models.CourseCompletion, *models.PaginationResponse, error)
+	GetByUserAndCourse(ctx context.Context, userID, courseID uuid.UUID) (*models.CourseCompletion, error)
+	GetUserCompletionsWithDetails(ctx context.Context, userID uuid.UUID, pagination models.PaginationRequest) ([]models.CourseCompletionResponse, *models.PaginationResponse, error)
+	DeleteByUserAndCourse(ctx context.Context, userID, courseID uuid.UUID) error
 }
 
 // RepositoryManager manages all repositories
@@ -90,6 +102,7 @@ type RepositoryManager interface {
 	Progress() ProgressRepository
 	Certificate() CertificateRepository
 	Prerequisite() PrerequisiteRepository
+	CourseCompletion() CourseCompletionRepository
 	
 	// Transaction support
 	WithTransaction(ctx context.Context, fn func(RepositoryManager) error) error

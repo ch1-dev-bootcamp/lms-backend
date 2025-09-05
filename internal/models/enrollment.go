@@ -19,6 +19,11 @@ type CreateEnrollmentRequest struct {
 	CourseID string `json:"course_id" validate:"required,uuid" example:"550e8400-e29b-41d4-a716-446655440000"`
 }
 
+// UpdateEnrollmentRequest represents the request payload for updating an enrollment
+type UpdateEnrollmentRequest struct {
+	Status string `json:"status,omitempty" example:"completed"`
+}
+
 // EnrollmentResponse represents the response payload for enrollment data
 type EnrollmentResponse struct {
 	UserID     uuid.UUID `json:"user_id" example:"550e8400-e29b-41d4-a716-446655440000"`

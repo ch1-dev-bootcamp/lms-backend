@@ -37,8 +37,10 @@ func main() {
 	r := gin.New()
 
 	// Apply global middleware
+	r.Use(middleware.RequestIDMiddleware())
 	r.Use(middleware.Logging())
 	r.Use(middleware.CORS())
+	r.Use(middleware.ErrorHandler())
 	r.Use(gin.Recovery())
 
 	// Health check endpoints
@@ -63,6 +65,7 @@ func main() {
 		{
 			users.GET("/profile", handlers.GetProfile)
 			users.PUT("/profile", middleware.ValidateRequest[models.UpdateProfileRequest](), handlers.UpdateProfile)
+			users.DELETE("/:id", handlers.DeleteUser)
 		}
 		
 		// Course routes
@@ -91,6 +94,8 @@ func main() {
 			enrollments.POST("/", middleware.ValidateRequest[models.CreateEnrollmentRequest](), handlers.Enroll)
 			enrollments.GET("/", middleware.ValidateQuery[models.PaginationRequest](), handlers.ListEnrollments)
 			enrollments.GET("/:id", handlers.GetEnrollment)
+			enrollments.PUT("/:id", middleware.ValidateRequest[models.UpdateEnrollmentRequest](), handlers.UpdateEnrollment)
+			enrollments.DELETE("/:id", handlers.DeleteEnrollment)
 		}
 		
 		// Progress routes

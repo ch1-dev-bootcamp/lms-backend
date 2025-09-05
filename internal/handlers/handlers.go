@@ -1,12 +1,14 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/your-org/lms-backend/internal/database"
+	apperrors "github.com/your-org/lms-backend/internal/errors"
 	"github.com/your-org/lms-backend/internal/middleware"
 	"github.com/your-org/lms-backend/internal/models"
 )
@@ -60,11 +62,7 @@ func Register(c *gin.Context) {
 	userRepo := database.GetRepoManager().User()
 	existingUser, err := userRepo.GetByEmail(c.Request.Context(), req.Email)
 	if err == nil && existingUser != nil {
-		c.JSON(http.StatusConflict, models.ErrorResponse{
-			Error:   "user_exists",
-			Message: "User with this email already exists",
-			Code:    http.StatusConflict,
-		})
+		middleware.AbortWithError(c, apperrors.NewUserExistsError())
 		return
 	}
 
@@ -81,11 +79,7 @@ func Register(c *gin.Context) {
 	}
 
 	if err := userRepo.Create(c.Request.Context(), user); err != nil {
-		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
-			Error:   "registration_failed",
-			Message: "Failed to create user account",
-			Code:    http.StatusInternalServerError,
-		})
+		middleware.ErrorHandlerFunc(c, err)
 		return
 	}
 
@@ -107,11 +101,15 @@ func Login(c *gin.Context) {
 	userRepo := database.GetRepoManager().User()
 	user, err := userRepo.GetByEmail(c.Request.Context(), req.Email)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, models.ErrorResponse{
-			Error:   "invalid_credentials",
-			Message: "Invalid email or password",
-			Code:    http.StatusUnauthorized,
-		})
+			// Check if it's a not found error
+	var appErr *apperrors.AppError
+	if errors.As(err, &appErr) {
+		if appErr.Code == apperrors.ErrorCodeNotFound {
+			middleware.AbortWithError(c, apperrors.NewValidationError("Invalid email or password"))
+			return
+		}
+	}
+		middleware.ErrorHandlerFunc(c, err)
 		return
 	}
 
@@ -119,11 +117,7 @@ func Login(c *gin.Context) {
 	// For now, just check if password matches our mock format
 	expectedHash := "hashed_password_" + req.Password
 	if user.PasswordHash != expectedHash {
-		c.JSON(http.StatusUnauthorized, models.ErrorResponse{
-			Error:   "invalid_credentials",
-			Message: "Invalid email or password",
-			Code:    http.StatusUnauthorized,
-		})
+		middleware.AbortWithError(c, apperrors.NewValidationError("Invalid email or password"))
 		return
 	}
 
@@ -156,11 +150,15 @@ func GetProfile(c *gin.Context) {
 	userRepo := database.GetRepoManager().User()
 	user, err := userRepo.GetByID(c.Request.Context(), userID)
 	if err != nil {
-		c.JSON(http.StatusNotFound, models.ErrorResponse{
-			Error:   "user_not_found",
-			Message: "User profile not found",
-			Code:    http.StatusNotFound,
-		})
+			// Check if it's a not found error
+	var appErr *apperrors.AppError
+	if errors.As(err, &appErr) {
+		if appErr.Code == apperrors.ErrorCodeNotFound {
+			middleware.AbortWithError(c, apperrors.NewUserNotFoundError())
+			return
+		}
+	}
+		middleware.ErrorHandlerFunc(c, err)
 		return
 	}
 
@@ -168,12 +166,14 @@ func GetProfile(c *gin.Context) {
 	enrollmentRepo := database.GetRepoManager().Enrollment()
 	enrollments, _, err := enrollmentRepo.GetByUser(c.Request.Context(), userID, models.PaginationRequest{Page: 1, PageSize: 100})
 	if err != nil {
+		// Log error but don't fail the request
 		enrollments = []models.Enrollment{}
 	}
 
 	certificateRepo := database.GetRepoManager().Certificate()
 	certificates, _, err := certificateRepo.GetByUser(c.Request.Context(), userID, models.PaginationRequest{Page: 1, PageSize: 100})
 	if err != nil {
+		// Log error but don't fail the request
 		certificates = []models.Certificate{}
 	}
 
@@ -206,11 +206,14 @@ func UpdateProfile(c *gin.Context) {
 	userRepo := database.GetRepoManager().User()
 	user, err := userRepo.GetByID(c.Request.Context(), userID)
 	if err != nil {
-		c.JSON(http.StatusNotFound, models.ErrorResponse{
-			Error:   "user_not_found",
-			Message: "User profile not found",
-			Code:    http.StatusNotFound,
-		})
+		var appErr *apperrors.AppError
+		if errors.As(err, &appErr) {
+			if appErr.Code == apperrors.ErrorCodeNotFound {
+				middleware.AbortWithError(c, apperrors.NewUserNotFoundError())
+				return
+			}
+		}
+		middleware.ErrorHandlerFunc(c, err)
 		return
 	}
 
@@ -224,11 +227,7 @@ func UpdateProfile(c *gin.Context) {
 	user.UpdatedAt = time.Now()
 
 	if err := userRepo.Update(c.Request.Context(), user); err != nil {
-		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
-			Error:   "update_failed",
-			Message: "Failed to update user profile",
-			Code:    http.StatusInternalServerError,
-		})
+		middleware.ErrorHandlerFunc(c, err)
 		return
 	}
 
@@ -236,6 +235,42 @@ func UpdateProfile(c *gin.Context) {
 		Message: "Profile updated successfully",
 		UserID:  user.ID,
 		Status:  "success",
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+func DeleteUser(c *gin.Context) {
+	userIDStr := c.Param("id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid user ID format"))
+		return
+	}
+
+	userRepo := database.GetRepoManager().User()
+	_, err = userRepo.GetByID(c.Request.Context(), userID)
+	if err != nil {
+		var appErr *apperrors.AppError
+		if errors.As(err, &appErr) {
+			if appErr.Code == apperrors.ErrorCodeNotFound {
+				middleware.AbortWithError(c, apperrors.NewUserNotFoundError())
+				return
+			}
+		}
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	if err := userRepo.Delete(c.Request.Context(), userID); err != nil {
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	response := models.SuccessResponse{
+		Message: "User deleted successfully",
+		Data: gin.H{
+			"user_id": userID,
+		},
 	}
 	c.JSON(http.StatusOK, response)
 }
@@ -287,11 +322,22 @@ func CreateCourse(c *gin.Context) {
 	// Parse instructor ID from request
 	instructorID, err := uuid.Parse(req.InstructorID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, models.ErrorResponse{
-			Error:   "invalid_instructor_id",
-			Message: "Invalid instructor ID format",
-			Code:    http.StatusBadRequest,
-		})
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid instructor ID format"))
+		return
+	}
+
+	// Verify instructor exists
+	userRepo := database.GetRepoManager().User()
+	_, err = userRepo.GetByID(c.Request.Context(), instructorID)
+	if err != nil {
+		var appErr *apperrors.AppError
+		if errors.As(err, &appErr) {
+			if appErr.Code == apperrors.ErrorCodeNotFound {
+				middleware.AbortWithError(c, apperrors.NewForeignKeyViolationError("Instructor not found"))
+				return
+			}
+		}
+		middleware.ErrorHandlerFunc(c, err)
 		return
 	}
 
@@ -308,11 +354,7 @@ func CreateCourse(c *gin.Context) {
 
 	courseRepo := database.GetRepoManager().Course()
 	if err := courseRepo.Create(c.Request.Context(), course); err != nil {
-		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
-			Error:   "creation_failed",
-			Message: "Failed to create course",
-			Code:    http.StatusInternalServerError,
-		})
+		middleware.ErrorHandlerFunc(c, err)
 		return
 	}
 
@@ -329,22 +371,21 @@ func GetCourse(c *gin.Context) {
 	courseIDStr := c.Param("id")
 	courseID, err := uuid.Parse(courseIDStr)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, models.ErrorResponse{
-			Error:   "invalid_id",
-			Message: "Invalid course ID format",
-			Code:    http.StatusBadRequest,
-		})
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid course ID format"))
 		return
 	}
 
 	courseRepo := database.GetRepoManager().Course()
 	courseDetail, err := courseRepo.GetWithDetails(c.Request.Context(), courseID)
 	if err != nil {
-		c.JSON(http.StatusNotFound, models.ErrorResponse{
-			Error:   "course_not_found",
-			Message: "Course not found",
-			Code:    http.StatusNotFound,
-		})
+		var appErr *apperrors.AppError
+		if errors.As(err, &appErr) {
+			if appErr.Code == apperrors.ErrorCodeNotFound {
+				middleware.AbortWithError(c, apperrors.NewCourseNotFoundError())
+				return
+			}
+		}
+		middleware.ErrorHandlerFunc(c, err)
 		return
 	}
 
@@ -461,75 +502,176 @@ func ListLessons(c *gin.Context) {
 		pagination = models.PaginationRequest{Page: 1, PageSize: 10}
 	}
 
-	lessons := []models.LessonResponse{
-		{
-			ID:          uuid.New(),
-			CourseID:    uuid.New(),
-			Title:       "Getting Started with Go",
-			Content:     stringPtr("Introduction to Go syntax and basic concepts"),
-			OrderNumber: 1,
-			CreatedAt:   time.Now().AddDate(0, -2, 0),
-		},
-		{
-			ID:          uuid.New(),
-			CourseID:    uuid.New(),
-			Title:       "Variables and Types",
-			Content:     stringPtr("Understanding Go's type system"),
-			OrderNumber: 2,
-			CreatedAt:   time.Now().AddDate(0, -2, 0),
-		},
+	lessonRepo := database.GetRepoManager().Lesson()
+	lessons, paginationResp, err := lessonRepo.List(c.Request.Context(), pagination)
+	if err != nil {
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Convert to response format
+	lessonResponses := make([]models.LessonResponse, len(lessons))
+	for i, lesson := range lessons {
+		lessonResponses[i] = models.LessonResponse{
+			ID:          lesson.ID,
+			CourseID:    lesson.CourseID,
+			Title:       lesson.Title,
+			Content:     lesson.Content,
+			OrderNumber: lesson.OrderNumber,
+			CreatedAt:   lesson.CreatedAt,
+			UpdatedAt:   lesson.UpdatedAt,
+		}
 	}
 
 	response := models.LessonListResponse{
-		Lessons: lessons,
-		Pagination: models.PaginationResponse{
-			Page:       pagination.Page,
-			PageSize:   pagination.PageSize,
-			Total:      len(lessons),
-			TotalPages: (len(lessons) + pagination.PageSize - 1) / pagination.PageSize,
-		},
+		Lessons:    lessonResponses,
+		Pagination: *paginationResp,
 	}
 	c.JSON(http.StatusOK, response)
 }
 
 func CreateLesson(c *gin.Context) {
-	_, exists := middleware.GetValidatedRequest[models.CreateLessonRequest](c)
+	req, exists := middleware.GetValidatedRequest[models.CreateLessonRequest](c)
 	if !exists {
 		return // Error already handled by middleware
+	}
+
+	// Parse course ID from request
+	courseID, err := uuid.Parse(req.CourseID)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid course ID format"))
+		return
+	}
+
+	// Verify course exists
+	courseRepo := database.GetRepoManager().Course()
+	_, err = courseRepo.GetByID(c.Request.Context(), courseID)
+	if err != nil {
+		var appErr *apperrors.AppError
+		if errors.As(err, &appErr) {
+			if appErr.Code == apperrors.ErrorCodeNotFound {
+				middleware.AbortWithError(c, apperrors.NewForeignKeyViolationError("Course not found"))
+				return
+			}
+		}
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	lessonID := uuid.New()
+	lesson := &models.Lesson{
+		ID:          lessonID,
+		CourseID:    courseID,
+		Title:       req.Title,
+		Content:     req.Content,
+		OrderNumber: req.OrderNumber,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+
+	lessonRepo := database.GetRepoManager().Lesson()
+	if err := lessonRepo.Create(c.Request.Context(), lesson); err != nil {
+		middleware.ErrorHandlerFunc(c, err)
+		return
 	}
 
 	response := models.SuccessResponse{
 		Message: "Lesson created successfully",
 		Data: gin.H{
-			"lesson_id": uuid.New(),
+			"lesson_id": lessonID,
 		},
 	}
 	c.JSON(http.StatusCreated, response)
 }
 
 func GetLesson(c *gin.Context) {
-	lessonID := c.Param("id")
+	lessonIDStr := c.Param("id")
+	lessonID, err := uuid.Parse(lessonIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid lesson ID format"))
+		return
+	}
+
+	lessonRepo := database.GetRepoManager().Lesson()
+	lesson, err := lessonRepo.GetByID(c.Request.Context(), lessonID)
+	if err != nil {
+		var appErr *apperrors.AppError
+		if errors.As(err, &appErr) {
+			if appErr.Code == apperrors.ErrorCodeNotFound {
+				middleware.AbortWithError(c, apperrors.NewLessonNotFoundError())
+				return
+			}
+		}
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Get course details for additional information
+	courseRepo := database.GetRepoManager().Course()
+	course, err := courseRepo.GetByID(c.Request.Context(), lesson.CourseID)
+	if err != nil {
+		// If course not found, still return lesson but without course title
+		course = &models.Course{Title: "Unknown Course"}
+	}
+
 	response := models.LessonDetailResponse{
 		LessonResponse: models.LessonResponse{
-			ID:          uuid.MustParse(lessonID),
-			CourseID:    uuid.New(),
-			Title:       "Getting Started with Go",
-			Content:     stringPtr("This lesson covers the basics of Go programming..."),
-			OrderNumber: 1,
-			CreatedAt:   time.Now().AddDate(0, -2, 0),
-			UpdatedAt:   time.Now(),
+			ID:          lesson.ID,
+			CourseID:    lesson.CourseID,
+			Title:       lesson.Title,
+			Content:     lesson.Content,
+			OrderNumber: lesson.OrderNumber,
+			CreatedAt:   lesson.CreatedAt,
+			UpdatedAt:   lesson.UpdatedAt,
 		},
-		CourseTitle: "Introduction to Go Programming",
-		Duration:    30,
+		CourseTitle: course.Title,
+		Duration:    30, // TODO: Calculate actual duration or store in database
 	}
 	c.JSON(http.StatusOK, response)
 }
 
 func UpdateLesson(c *gin.Context) {
-	lessonID := c.Param("id")
-	_, exists := middleware.GetValidatedRequest[models.UpdateLessonRequest](c)
+	lessonIDStr := c.Param("id")
+	lessonID, err := uuid.Parse(lessonIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid lesson ID format"))
+		return
+	}
+
+	req, exists := middleware.GetValidatedRequest[models.UpdateLessonRequest](c)
 	if !exists {
 		return // Error already handled by middleware
+	}
+
+	lessonRepo := database.GetRepoManager().Lesson()
+	lesson, err := lessonRepo.GetByID(c.Request.Context(), lessonID)
+	if err != nil {
+		var appErr *apperrors.AppError
+		if errors.As(err, &appErr) {
+			if appErr.Code == apperrors.ErrorCodeNotFound {
+				middleware.AbortWithError(c, apperrors.NewLessonNotFoundError())
+				return
+			}
+		}
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Update lesson fields
+	if req.Title != "" {
+		lesson.Title = req.Title
+	}
+	if req.Content != nil {
+		lesson.Content = req.Content
+	}
+	if req.OrderNumber != 0 {
+		lesson.OrderNumber = req.OrderNumber
+	}
+	lesson.UpdatedAt = time.Now()
+
+	if err := lessonRepo.Update(c.Request.Context(), lesson); err != nil {
+		middleware.ErrorHandlerFunc(c, err)
+		return
 	}
 
 	response := models.SuccessResponse{
@@ -542,7 +684,19 @@ func UpdateLesson(c *gin.Context) {
 }
 
 func DeleteLesson(c *gin.Context) {
-	lessonID := c.Param("id")
+	lessonIDStr := c.Param("id")
+	lessonID, err := uuid.Parse(lessonIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid lesson ID format"))
+		return
+	}
+
+	lessonRepo := database.GetRepoManager().Lesson()
+	if err := lessonRepo.Delete(c.Request.Context(), lessonID); err != nil {
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
 	response := models.SuccessResponse{
 		Message: "Lesson deleted successfully",
 		Data: gin.H{
@@ -559,13 +713,76 @@ func Enroll(c *gin.Context) {
 		return // Error already handled by middleware
 	}
 
+	// Parse user and course IDs
+	userID, err := uuid.Parse(req.UserID)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid user ID format"))
+		return
+	}
+
+	courseID, err := uuid.Parse(req.CourseID)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid course ID format"))
+		return
+	}
+
+	// Verify user exists
+	userRepo := database.GetRepoManager().User()
+	_, err = userRepo.GetByID(c.Request.Context(), userID)
+	if err != nil {
+		var appErr *apperrors.AppError
+		if errors.As(err, &appErr) {
+			if appErr.Code == apperrors.ErrorCodeNotFound {
+				middleware.AbortWithError(c, apperrors.NewForeignKeyViolationError("User not found"))
+				return
+			}
+		}
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Verify course exists
+	courseRepo := database.GetRepoManager().Course()
+	_, err = courseRepo.GetByID(c.Request.Context(), courseID)
+	if err != nil {
+		var appErr *apperrors.AppError
+		if errors.As(err, &appErr) {
+			if appErr.Code == apperrors.ErrorCodeNotFound {
+				middleware.AbortWithError(c, apperrors.NewForeignKeyViolationError("Course not found"))
+				return
+			}
+		}
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Check if already enrolled
+	enrollmentRepo := database.GetRepoManager().Enrollment()
+	existingEnrollment, err := enrollmentRepo.GetByUserAndCourse(c.Request.Context(), userID, courseID)
+	if err == nil && existingEnrollment != nil {
+		middleware.AbortWithError(c, apperrors.NewAlreadyEnrolledError())
+		return
+	}
+
+	enrollmentID := uuid.New()
+	enrollment := &models.Enrollment{
+		UserID:     userID,
+		CourseID:   courseID,
+		EnrolledAt: time.Now(),
+	}
+
+	if err := enrollmentRepo.Create(c.Request.Context(), enrollment); err != nil {
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
 	response := models.CreateEnrollmentResponse{
 		Message:      "Enrollment successful",
-		EnrollmentID: uuid.New(),
-		UserID:       uuid.MustParse(req.UserID),
-		CourseID:     uuid.MustParse(req.CourseID),
+		EnrollmentID: enrollmentID,
+		UserID:       userID,
+		CourseID:     courseID,
 		Status:       "enrolled",
-		EnrolledAt:   time.Now(),
+		EnrolledAt:   enrollment.EnrolledAt,
 	}
 	c.JSON(http.StatusCreated, response)
 }
@@ -576,54 +793,172 @@ func ListEnrollments(c *gin.Context) {
 		pagination = models.PaginationRequest{Page: 1, PageSize: 10}
 	}
 
-	enrollments := []models.EnrollmentDetailResponse{
-		{
+	enrollmentRepo := database.GetRepoManager().Enrollment()
+	enrollments, paginationResp, err := enrollmentRepo.List(c.Request.Context(), pagination)
+	if err != nil {
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Convert to detailed response format
+	enrollmentDetails := make([]models.EnrollmentDetailResponse, len(enrollments))
+	for i, enrollment := range enrollments {
+		// Get user details
+		userRepo := database.GetRepoManager().User()
+		user, err := userRepo.GetByID(c.Request.Context(), enrollment.UserID)
+		if err != nil {
+			user = &models.User{Name: "Unknown User"}
+		}
+
+		// Get course details
+		courseRepo := database.GetRepoManager().Course()
+		course, err := courseRepo.GetByID(c.Request.Context(), enrollment.CourseID)
+		if err != nil {
+			course = &models.Course{Title: "Unknown Course"}
+		}
+
+		// Get progress (simplified for now)
+		progress := 0.0 // TODO: Calculate actual progress from progress table
+
+		enrollmentDetails[i] = models.EnrollmentDetailResponse{
 			EnrollmentResponse: models.EnrollmentResponse{
-				UserID:     uuid.New(),
-				CourseID:   uuid.New(),
-				EnrolledAt: time.Now().AddDate(0, -1, 0),
+				UserID:     enrollment.UserID,
+				CourseID:   enrollment.CourseID,
+				EnrolledAt: enrollment.EnrolledAt,
 			},
-			CourseTitle: "Introduction to Go Programming",
-			UserName:    "John Doe",
-			Progress:    25.5,
-			Status:      "enrolled",
-		},
-		{
-			EnrollmentResponse: models.EnrollmentResponse{
-				UserID:     uuid.New(),
-				CourseID:   uuid.New(),
-				EnrolledAt: time.Now().AddDate(0, -2, 0),
-			},
-			CourseTitle: "Advanced Web Development",
-			UserName:    "Jane Smith",
-			Progress:    100.0,
-			Status:      "completed",
-		},
+			CourseTitle: course.Title,
+			UserName:    user.Name,
+			Progress:    progress,
+			Status:      "enrolled", // TODO: Calculate status based on progress
+		}
 	}
 
 	response := models.EnrollmentListResponse{
-		Enrollments: enrollments,
-		Pagination: models.PaginationResponse{
-			Page:       pagination.Page,
-			PageSize:   pagination.PageSize,
-			Total:      len(enrollments),
-			TotalPages: (len(enrollments) + pagination.PageSize - 1) / pagination.PageSize,
-		},
+		Enrollments: enrollmentDetails,
+		Pagination:  *paginationResp,
 	}
 	c.JSON(http.StatusOK, response)
 }
 
 func GetEnrollment(c *gin.Context) {
+	enrollmentIDStr := c.Param("id")
+	enrollmentID, err := uuid.Parse(enrollmentIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid enrollment ID format"))
+		return
+	}
+
+	enrollmentRepo := database.GetRepoManager().Enrollment()
+	enrollment, err := enrollmentRepo.GetByID(c.Request.Context(), enrollmentID)
+	if err != nil {
+		var appErr *apperrors.AppError
+		if errors.As(err, &appErr) {
+			if appErr.Code == apperrors.ErrorCodeNotFound {
+				middleware.AbortWithError(c, apperrors.NewEnrollmentNotFoundError())
+				return
+			}
+		}
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Get user details
+	userRepo := database.GetRepoManager().User()
+	user, err := userRepo.GetByID(c.Request.Context(), enrollment.UserID)
+	if err != nil {
+		user = &models.User{Name: "Unknown User"}
+	}
+
+	// Get course details
+	courseRepo := database.GetRepoManager().Course()
+	course, err := courseRepo.GetByID(c.Request.Context(), enrollment.CourseID)
+	if err != nil {
+		course = &models.Course{Title: "Unknown Course"}
+	}
+
+	// Get progress (simplified for now)
+	progress := 0.0 // TODO: Calculate actual progress from progress table
+
 	response := models.EnrollmentDetailResponse{
 		EnrollmentResponse: models.EnrollmentResponse{
-			UserID:     uuid.New(),
-			CourseID:   uuid.New(),
-			EnrolledAt: time.Now().AddDate(0, -1, 0),
+			UserID:     enrollment.UserID,
+			CourseID:   enrollment.CourseID,
+			EnrolledAt: enrollment.EnrolledAt,
 		},
-		CourseTitle: "Introduction to Go Programming",
-		UserName:    "John Doe",
-		Progress:    25.5,
-		Status:      "enrolled",
+		CourseTitle: course.Title,
+		UserName:    user.Name,
+		Progress:    progress,
+		Status:      "enrolled", // TODO: Calculate status based on progress
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+func UpdateEnrollment(c *gin.Context) {
+	enrollmentIDStr := c.Param("id")
+	enrollmentID, err := uuid.Parse(enrollmentIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid enrollment ID format"))
+		return
+	}
+
+	req, exists := middleware.GetValidatedRequest[models.UpdateEnrollmentRequest](c)
+	if !exists {
+		return // Error already handled by middleware
+	}
+
+	enrollmentRepo := database.GetRepoManager().Enrollment()
+	enrollment, err := enrollmentRepo.GetByID(c.Request.Context(), enrollmentID)
+	if err != nil {
+		var appErr *apperrors.AppError
+		if errors.As(err, &appErr) {
+			if appErr.Code == apperrors.ErrorCodeNotFound {
+				middleware.AbortWithError(c, apperrors.NewEnrollmentNotFoundError())
+				return
+			}
+		}
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Update enrollment fields if provided
+	if req.Status != "" {
+		// For now, we'll just update the enrollment timestamp
+		enrollment.EnrolledAt = time.Now()
+	}
+
+	if err := enrollmentRepo.Update(c.Request.Context(), enrollment); err != nil {
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	response := models.SuccessResponse{
+		Message: "Enrollment updated successfully",
+		Data: gin.H{
+			"enrollment_id": enrollmentID,
+		},
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+func DeleteEnrollment(c *gin.Context) {
+	enrollmentIDStr := c.Param("id")
+	enrollmentID, err := uuid.Parse(enrollmentIDStr)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid enrollment ID format"))
+		return
+	}
+
+	enrollmentRepo := database.GetRepoManager().Enrollment()
+	if err := enrollmentRepo.Delete(c.Request.Context(), enrollmentID); err != nil {
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	response := models.SuccessResponse{
+		Message: "Enrollment deleted successfully",
+		Data: gin.H{
+			"enrollment_id": enrollmentID,
+		},
 	}
 	c.JSON(http.StatusOK, response)
 }
@@ -635,11 +970,78 @@ func CompleteLesson(c *gin.Context) {
 		return // Error already handled by middleware
 	}
 
+	// Parse user and lesson IDs
+	userID, err := uuid.Parse(req.UserID)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid user ID format"))
+		return
+	}
+
+	lessonID, err := uuid.Parse(req.LessonID)
+	if err != nil {
+		middleware.AbortWithError(c, apperrors.NewInvalidFormatError("Invalid lesson ID format"))
+		return
+	}
+
+	// Verify user exists
+	userRepo := database.GetRepoManager().User()
+	_, err = userRepo.GetByID(c.Request.Context(), userID)
+	if err != nil {
+		var appErr *apperrors.AppError
+		if errors.As(err, &appErr) {
+			if appErr.Code == apperrors.ErrorCodeNotFound {
+				middleware.AbortWithError(c, apperrors.NewForeignKeyViolationError("User not found"))
+				return
+			}
+		}
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Verify lesson exists
+	lessonRepo := database.GetRepoManager().Lesson()
+	_, err = lessonRepo.GetByID(c.Request.Context(), lessonID)
+	if err != nil {
+		var appErr *apperrors.AppError
+		if errors.As(err, &appErr) {
+			if appErr.Code == apperrors.ErrorCodeNotFound {
+				middleware.AbortWithError(c, apperrors.NewForeignKeyViolationError("Lesson not found"))
+				return
+			}
+		}
+		middleware.ErrorHandlerFunc(c, err)
+		return
+	}
+
+	// Check if already completed
+	progressRepo := database.GetRepoManager().Progress()
+	existingProgress, err := progressRepo.GetByUserAndLesson(c.Request.Context(), userID, lessonID)
+	if err == nil && existingProgress != nil {
+		// Update existing progress
+		existingProgress.CompletedAt = time.Now()
+		if err := progressRepo.Update(c.Request.Context(), existingProgress); err != nil {
+			middleware.ErrorHandlerFunc(c, err)
+			return
+		}
+	} else {
+		// Create new progress record
+		progress := &models.Progress{
+			UserID:      userID,
+			LessonID:    lessonID,
+			CompletedAt: time.Now(),
+		}
+
+		if err := progressRepo.Create(c.Request.Context(), progress); err != nil {
+			middleware.ErrorHandlerFunc(c, err)
+			return
+		}
+	}
+
 	response := models.CompleteLessonResponse{
 		Message:        "Lesson completed successfully",
-		ProgressID:     uuid.New(),
-		UserID:         uuid.MustParse(req.UserID),
-		LessonID:       uuid.MustParse(req.LessonID),
+		ProgressID:     uuid.New(), // TODO: Return actual progress ID
+		UserID:         userID,
+		LessonID:       lessonID,
 		CompletionRate: 100.0,
 		CompletedAt:    time.Now(),
 		Status:         "success",

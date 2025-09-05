@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lib/pq"
+	"github.com/your-org/lms-backend/internal/errors"
 	"github.com/your-org/lms-backend/internal/models"
 )
 
@@ -135,26 +136,26 @@ func handleDatabaseError(err error) error {
 	if pqErr, ok := err.(*pq.Error); ok {
 		switch pqErr.Code {
 		case "23505": // unique_violation
-			return fmt.Errorf("duplicate entry: %s", pqErr.Detail)
+			return errors.NewDuplicateEntryError(pqErr.Detail)
 		case "23503": // foreign_key_violation
-			return fmt.Errorf("referenced record not found: %s", pqErr.Detail)
+			return errors.NewForeignKeyViolationError(pqErr.Detail)
 		case "23502": // not_null_violation
-			return fmt.Errorf("required field is missing: %s", pqErr.Column)
+			return errors.NewConstraintViolationError(fmt.Sprintf("required field is missing: %s", pqErr.Column))
 		case "23514": // check_violation
-			return fmt.Errorf("constraint violation: %s", pqErr.Detail)
+			return errors.NewConstraintViolationError(pqErr.Detail)
 		default:
-			return fmt.Errorf("database error: %s", pqErr.Message)
+			return errors.NewDatabaseError(err, "database operation")
 		}
 	}
 
 	// Handle common SQL errors
 	switch err {
 	case sql.ErrNoRows:
-		return fmt.Errorf("record not found")
+		return errors.NewNotFoundError("record not found")
 	case sql.ErrConnDone:
-		return fmt.Errorf("database connection is closed")
+		return errors.NewServiceUnavailableError("database")
 	default:
-		return fmt.Errorf("database error: %w", err)
+		return errors.NewDatabaseError(err, "database operation")
 	}
 }
 

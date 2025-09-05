@@ -2,8 +2,9 @@ package main
 
 import (
 	"log"
-	"net/http"
 
+	"github.com/gin-gonic/gin"
+	"github.com/your-org/lms-backend/internal/database"
 	"github.com/your-org/lms-backend/internal/handlers"
 	"github.com/your-org/lms-backend/internal/middleware"
 	"github.com/your-org/lms-backend/pkg/config"
@@ -13,17 +14,37 @@ func main() {
 	// Load configuration
 	cfg := config.Load()
 
-	// Setup routes
-	mux := http.NewServeMux()
+	// Initialize database connection
+	log.Println("Initializing database connection...")
+	dbConfig := database.NewConnectionConfig(cfg)
+	if err := database.Connect(dbConfig); err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
+	}
+	defer database.Close()
 
-	// Health check endpoint
-	mux.HandleFunc("/health", handlers.HealthCheck)
+	log.Println("Database connected successfully!")
 
-	// API routes (placeholder for now)
-	mux.HandleFunc("/api/v1/", handlers.APIRoot)
+	// Set Gin mode
+	gin.SetMode(gin.ReleaseMode)
 
-	// Apply middleware
-	handler := middleware.Logging(middleware.CORS(mux))
+	// Create Gin router
+	r := gin.New()
+
+	// Apply global middleware
+	r.Use(middleware.Logging())
+	r.Use(middleware.CORS())
+	r.Use(gin.Recovery())
+
+	// Health check endpoints
+	r.GET("/health", handlers.HealthCheck)
+	r.GET("/health/database", handlers.DatabaseHealth)
+
+	// API v1 routes
+	v1 := r.Group("/api/v1")
+	{
+		v1.GET("/", handlers.APIRoot)
+		// Future API endpoints will be added here
+	}
 
 	// Start server
 	port := cfg.Server.Port
@@ -32,5 +53,5 @@ func main() {
 	}
 
 	log.Printf("Starting LMS server on port %s", port)
-	log.Fatal(http.ListenAndServe(":"+port, handler))
+	log.Fatal(r.Run(":" + port))
 }

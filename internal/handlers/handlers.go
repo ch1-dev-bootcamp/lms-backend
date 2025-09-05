@@ -1,32 +1,41 @@
 package handlers
 
 import (
-	"encoding/json"
 	"net/http"
+
+	"github.com/gin-gonic/gin"
+	"github.com/your-org/lms-backend/internal/database"
 )
 
 // HealthCheck handles health check requests
-func HealthCheck(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	
-	response := map[string]string{
-		"status": "healthy",
+func HealthCheck(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "healthy",
 		"service": "lms-backend",
-	}
-	
-	json.NewEncoder(w).Encode(response)
+	})
 }
 
 // APIRoot handles API root requests
-func APIRoot(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	
-	response := map[string]string{
+func APIRoot(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
 		"message": "LMS API v1",
 		"version": "1.0.0",
+	})
+}
+
+// DatabaseHealth handles database health check requests
+func DatabaseHealth(c *gin.Context) {
+	if err := database.HealthCheck(); err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"status":    "unhealthy",
+			"service":   "database",
+			"error":     err.Error(),
+		})
+		return
 	}
-	
-	json.NewEncoder(w).Encode(response)
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "healthy",
+		"service": "database",
+	})
 }

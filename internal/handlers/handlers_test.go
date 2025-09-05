@@ -3,54 +3,50 @@ package handlers
 import (
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
+
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestHealthCheck(t *testing.T) {
-	req, err := http.NewRequest("GET", "/health", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	rr := httptest.NewRecorder()
-	handler := http.HandlerFunc(HealthCheck)
-
-	handler.ServeHTTP(rr, req)
-
-	if status := rr.Code; status != http.StatusOK {
-		t.Errorf("handler returned wrong status code: got %v want %v",
-			status, http.StatusOK)
-	}
-
-	// Check that the response contains the expected fields
-	body := strings.TrimSpace(rr.Body.String())
-	expected := `{"service":"lms-backend","status":"healthy"}`
-	if body != expected {
-		t.Errorf("handler returned unexpected body: got %q want %q", body, expected)
-	}
+	// Set Gin to test mode
+	gin.SetMode(gin.TestMode)
+	
+	// Create a Gin router
+	r := gin.New()
+	r.GET("/health", HealthCheck)
+	
+	// Create a test request
+	req, _ := http.NewRequest("GET", "/health", nil)
+	w := httptest.NewRecorder()
+	
+	// Perform the request
+	r.ServeHTTP(w, req)
+	
+	// Assert the response
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "healthy")
+	assert.Contains(t, w.Body.String(), "lms-backend")
 }
 
 func TestAPIRoot(t *testing.T) {
-	req, err := http.NewRequest("GET", "/api/v1/", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	rr := httptest.NewRecorder()
-	handler := http.HandlerFunc(APIRoot)
-
-	handler.ServeHTTP(rr, req)
-
-	if status := rr.Code; status != http.StatusOK {
-		t.Errorf("handler returned wrong status code: got %v want %v",
-			status, http.StatusOK)
-	}
-
-	// Check that the response contains the expected fields
-	body := strings.TrimSpace(rr.Body.String())
-	expected := `{"message":"LMS API v1","version":"1.0.0"}`
-	if body != expected {
-		t.Errorf("handler returned unexpected body: got %q want %q", body, expected)
-	}
+	// Set Gin to test mode
+	gin.SetMode(gin.TestMode)
+	
+	// Create a Gin router
+	r := gin.New()
+	r.GET("/api/v1/", APIRoot)
+	
+	// Create a test request
+	req, _ := http.NewRequest("GET", "/api/v1/", nil)
+	w := httptest.NewRecorder()
+	
+	// Perform the request
+	r.ServeHTTP(w, req)
+	
+	// Assert the response
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "LMS API v1")
+	assert.Contains(t, w.Body.String(), "1.0.0")
 }

@@ -3,52 +3,38 @@ package middleware
 import (
 	"log"
 	"net/http"
-	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
 // Logging middleware logs HTTP requests
-func Logging(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		
-		// Wrap the ResponseWriter to capture status code
-		wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
-		
-		next.ServeHTTP(wrapped, r)
-		
+func Logging() gin.HandlerFunc {
+	return gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
 		log.Printf(
-			"%s %s %d %v",
-			r.Method,
-			r.URL.Path,
-			wrapped.statusCode,
-			time.Since(start),
+			"%s %s %d %v %s %s\n",
+			param.Method,
+			param.Path,
+			param.StatusCode,
+			param.Latency,
+			param.ClientIP,
+			param.ErrorMessage,
 		)
+		return ""
 	})
 }
 
 // CORS middleware handles Cross-Origin Resource Sharing
-func CORS(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+func CORS() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Access-Control-Allow-Origin", "*")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(http.StatusOK)
 			return
 		}
 		
-		next.ServeHTTP(w, r)
-	})
-}
-
-// responseWriter wraps http.ResponseWriter to capture status code
-type responseWriter struct {
-	http.ResponseWriter
-	statusCode int
-}
-
-func (rw *responseWriter) WriteHeader(code int) {
-	rw.statusCode = code
-	rw.ResponseWriter.WriteHeader(code)
+		c.Next()
+	}
 }
